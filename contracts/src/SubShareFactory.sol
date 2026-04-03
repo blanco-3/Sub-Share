@@ -23,7 +23,9 @@ contract SubShareFactory {
         string  memory name,
         uint256 monthlyPrice,
         uint256 nMembers,
-        uint256 duration
+        uint256 duration,
+        address reclaimVerifier,
+        string memory reclaimProviderId
     ) external returns (address vault) {
         SubShareVault v = new SubShareVault(
             usdc,
@@ -31,7 +33,9 @@ contract SubShareFactory {
             monthlyPrice,
             nMembers,
             duration,
-            msg.sender   // real creator passed explicitly
+            msg.sender,        // real creator passed explicitly
+            reclaimVerifier,
+            reclaimProviderId
         );
         allVaults.push(address(v));
         emit VaultCreated(address(v), msg.sender, name, monthlyPrice, nMembers, duration);

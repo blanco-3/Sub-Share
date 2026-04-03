@@ -2,7 +2,19 @@ import { useState, useCallback, useEffect } from 'react'
 import { useReadContract, usePublicClient, useConnectorClient } from 'wagmi'
 import { parseUnits, decodeEventLog, createWalletClient, custom } from 'viem'
 import { baseSepolia } from 'viem/chains'
-import { USDC_ADDRESS, USDC_ABI, VAULT_ABI, FACTORY_ABI, FACTORY_ADDRESS, CHAIN_ID } from './contracts.js'
+import { transformForOnchain } from '@reclaimprotocol/js-sdk'
+import {
+  USDC_ADDRESS,
+  USDC_ABI,
+  VAULT_ABI,
+  FACTORY_ABI,
+  FACTORY_ADDRESS,
+  RECLAIM_VERIFIER_ADDRESS,
+  CHAIN_ID,
+} from './contracts.js'
+
+const RECLAIM_PROVIDER_ID = import.meta.env.VITE_RECLAIM_PROVIDER_ID?.trim()
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 
 // ─── Patch Reown's CAIP-2 eth_chainId bug ─────────────────────────────────────
 // Reown AppKit returns "eip155:84532" from eth_chainId instead of "0x14a34".
@@ -22,6 +34,34 @@ function makeFixedClient(connectorClient) {
   })
 }
 
+function normalizeProofForContract(proofLike) {
+  const proof = Array.isArray(proofLike) ? proofLike[0] : proofLike
+  if (!proof || typeof proof === 'string') {
+    throw new Error('No Reclaim proof was returned')
+  }
+
+  if (proof.claimInfo && proof.signedClaim && !proof.claimData) {
+    return proof
+  }
+
+  if (!proof.claimData) {
+    throw new Error('Unexpected Reclaim proof shape')
+  }
+
+  return transformForOnchain(proof)
+}
+
+function getReadableError(error, fallback = 'Transaction failed') {
+  return (
+    error?.cause?.reason ||
+    error?.cause?.data?.errorName ||
+    error?.shortMessage ||
+    error?.details ||
+    error?.message ||
+    fallback
+  )
+}
+
 // ─── Create vault via Factory ─────────────────────────────────────────────────
 export function useDeployVault() {
   const [isDeploying, setIsDeploying] = useState(false)
@@ -33,6 +73,10 @@ export function useDeployVault() {
     try {
       const wc = makeFixedClient(connectorClient)
       if (!wc) throw new Error('Wallet not connected')
+      if (!FACTORY_ADDRESS || !ADDRESS_RE.test(FACTORY_ADDRESS)) {
+        throw new Error('Missing VITE_FACTORY_ADDRESS')
+      }
+      if (!RECLAIM_PROVIDER_ID) throw new Error('Missing VITE_RECLAIM_PROVIDER_ID')
 
       const monthlyPriceUsdc = parseUnits(String(monthlyPriceUSD), 6)
 
@@ -40,7 +84,15 @@ export function useDeployVault() {
         address: FACTORY_ADDRESS,
         abi: FACTORY_ABI,
         functionName: 'createVault',
-        args: [USDC_ADDRESS, name, monthlyPriceUsdc, BigInt(nMembers), BigInt(duration)],
+        args: [
+          USDC_ADDRESS,
+          name,
+          monthlyPriceUsdc,
+          BigInt(nMembers),
+          BigInt(duration),
+          RECLAIM_VERIFIER_ADDRESS,
+          RECLAIM_PROVIDER_ID,
+        ],
         chain: baseSepolia,
       })
 
@@ -56,6 +108,8 @@ export function useDeployVault() {
         } catch {}
       }
       throw new Error('VaultCreated event not found in receipt')
+    } catch (error) {
+      throw new Error(getReadableError(error, 'Create vault failed'))
     } finally {
       setIsDeploying(false)
     }
@@ -98,7 +152,7 @@ export function useVaultDeposit(vaultAddress) {
       return depositTx
     } catch (e) {
       setStep('error')
-      throw e
+      throw new Error(getReadableError(e, 'Deposit failed'))
     }
   }, [vaultAddress, connectorClient, publicClient])
 
@@ -140,13 +194,7 @@ export function useVaultJoin(vaultAddress, userAddress) {
           // no account param — avoids CAIP-10 format issues with Reown
         })
       } catch (simErr) {
-        const reason =
-          simErr?.cause?.reason ||
-          simErr?.cause?.data?.errorName ||
-          simErr?.shortMessage ||
-          simErr?.message ||
-          String(simErr)
-        throw new Error(reason)
+        throw new Error(getReadableError(simErr, 'Join simulation failed'))
       }
 
       // 2. Simulation passed → send actual tx via patched client
@@ -161,6 +209,8 @@ export function useVaultJoin(vaultAddress, userAddress) {
       })
       await publicClient.waitForTransactionReceipt({ hash: tx })
       return tx
+    } catch (error) {
+      throw new Error(getReadableError(error, 'Join failed'))
     } finally {
       setIsJoining(false)
     }
@@ -191,6 +241,8 @@ export function useVaultApprove(vaultAddress) {
       })
       await publicClient.waitForTransactionReceipt({ hash: tx })
       return tx
+    } catch (error) {
+      throw new Error(getReadableError(error, 'Approve failed'))
     } finally {
       setIsApproving(false)
     }
@@ -213,12 +265,48 @@ export function useVaultApprove(vaultAddress) {
       })
       await publicClient.waitForTransactionReceipt({ hash: tx })
       return tx
+    } catch (error) {
+      throw new Error(getReadableError(error, 'Claim after grace failed'))
     } finally {
       setIsApproving(false)
     }
   }, [vaultAddress, connectorClient, publicClient])
 
   return { approve, claimAfterGrace, isApproving }
+}
+
+// ─── Claim via Reclaim ZK proof (creator fast-path) ──────────────────────────
+export function useVaultClaimWithProof(vaultAddress) {
+  const [isClaiming, setIsClaiming] = useState(false)
+  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const publicClient = usePublicClient({ chainId: CHAIN_ID })
+
+  const claimWithProof = useCallback(async (month, proof) => {
+    if (!vaultAddress) return
+    setIsClaiming(true)
+    try {
+      const wc = makeFixedClient(connectorClient)
+      if (!wc) throw new Error('Wallet not connected')
+
+      const onchainProof = normalizeProofForContract(proof)
+
+      const tx = await wc.writeContract({
+        address: vaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'claimWithProof',
+        args: [onchainProof, BigInt(month)],
+        chain: baseSepolia,
+      })
+      await publicClient.waitForTransactionReceipt({ hash: tx })
+      return tx
+    } catch (error) {
+      throw new Error(getReadableError(error, 'Proof claim failed'))
+    } finally {
+      setIsClaiming(false)
+    }
+  }, [vaultAddress, connectorClient, publicClient])
+
+  return { claimWithProof, isClaiming }
 }
 
 // ─── Read vault info ──────────────────────────────────────────────────────────
@@ -283,19 +371,20 @@ export function useMyVaults(userAddress) {
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
   const [vaults, setVaults] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const hasFactoryAddress = !!(FACTORY_ADDRESS && ADDRESS_RE.test(FACTORY_ADDRESS))
 
   // total vault count
   const { data: totalRaw } = useReadContract({
-    address: FACTORY_ADDRESS,
+    address: hasFactoryAddress ? FACTORY_ADDRESS : undefined,
     abi: FACTORY_ABI,
     functionName: 'totalVaults',
     chainId: CHAIN_ID,
-    query: { enabled: !!userAddress, refetchInterval: 10000 },
+    query: { enabled: !!userAddress && hasFactoryAddress, refetchInterval: 10000 },
   })
   const total = totalRaw ? Number(totalRaw) : 0
 
   const refresh = useCallback(async () => {
-    if (!userAddress || !publicClient || total === 0) { setVaults([]); return }
+    if (!userAddress || !publicClient || !hasFactoryAddress || total === 0) { setVaults([]); return }
     setIsLoading(true)
     try {
       // Multicall: fetch all vault addresses
@@ -336,7 +425,7 @@ export function useMyVaults(userAddress) {
     } finally {
       setIsLoading(false)
     }
-  }, [userAddress, publicClient, total])
+  }, [userAddress, publicClient, hasFactoryAddress, total])
 
   // auto-refresh when total changes
   useEffect(() => { refresh() }, [refresh])

@@ -46,6 +46,16 @@
         "name": "duration",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "reclaimVerifier",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "reclaimProviderId",
+        "type": "string",
+        "internalType": "string"
       }
     ],
     "outputs": [

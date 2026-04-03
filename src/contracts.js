@@ -7,8 +7,11 @@ export const CHAIN_ID = 84532
 // Base Sepolia USDC
 export const USDC_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
 
-// SubShareFactory (deployed once, users call createVault)
-export const FACTORY_ADDRESS = '0x0ee8210990a5f0c4f8125b5bd0586210b63d1221'
+// Reclaim verifier on Base Sepolia
+export const RECLAIM_VERIFIER_ADDRESS = '0xF90085f5Fd1a3bEb8678623409b3811eCeC5f6A5'
+
+// SubShareFactory must point to the latest deployment that knows about Reclaim.
+export const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS?.trim()
 
 export const USDC_ABI = [
   {

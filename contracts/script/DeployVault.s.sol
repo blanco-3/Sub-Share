@@ -7,9 +7,11 @@ import "../src/SubShareVault.sol";
 contract DeployVault is Script {
     // Base Sepolia USDC
     address constant USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
+    address constant RECLAIM_VERIFIER = 0xF90085f5Fd1a3bEb8678623409b3811eCeC5f6A5;
 
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        string memory reclaimProviderId = vm.envString("RECLAIM_PROVIDER_ID");
         vm.startBroadcast(deployerKey);
 
         // Example vault: Claude Max 20x, $200/mo, 4 members, 3 months
@@ -20,7 +22,9 @@ contract DeployVault is Script {
             200_000_000,  // $200.00 USDC
             4,            // 4 members
             3,            // 3 months
-            msg.sender    // creator
+            msg.sender,   // creator
+            RECLAIM_VERIFIER,
+            reclaimProviderId
         );
 
         console.log("SubShareVault deployed at:", address(vault));

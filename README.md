@@ -1,78 +1,115 @@
 # Sub-Share
 
-**Trustless subscription sharing for teams.**
+**Claude reimbursement for hackathon teams, without awkward chasing.**
 
-Split costly AI tools (Claude Team, ChatGPT Team, Cursor Business, etc.) with your project team — no trust needed. Smart contracts handle the money.
+Sub-Share is a trust-minimized reimbursement vault for small online teams sharing Claude. One teammate pays the bill first. Everyone else commits funds upfront. The payer gets reimbursed by onchain rules instead of reminders in Discord.
 
 ## Problem
 
-When developers form project teams online (hackathons, open source, freelance), they often need shared access to expensive AI subscriptions. But:
+When online teammates share a Claude subscription, one person usually pays first and becomes the collector:
 
-- One person must pay the full amount upfront
-- No guarantee others will pay their share
-- No way to prevent someone from disappearing mid-commitment
-- Cross-border payments add friction (currency conversion, fees)
-- Existing tools (Toss, KakaoPay, Splitwise) assume trust between users
+- They front the full invoice
+- They wait for multiple people to reimburse them
+- They have to remind teammates manually
+- They carry both financial risk and social discomfort
+- Existing apps like Splitwise, Toss, or KakaoPay track who owes what, but they do not enforce commitment
+
+This is especially painful for hackathon teams and short-lived project groups where members may barely know each other.
 
 ## Solution
 
-Sub-Share uses smart contract vaults to enable trustless subscription cost-sharing:
+Sub-Share turns reimbursement into a pre-committed flow:
 
-1. **Create a Vault** — Choose subscription, set team size & commitment period
-2. **Invite Members** — Share link. Anyone joins via social login (Google/Discord/GitHub) or wallet
-3. **Everyone Deposits** — Each member locks their share (USDC) upfront in the contract
-4. **Auto-Pay via Virtual Card** — A shared virtual card pays the subscription directly from the vault. No one touches the funds.
+1. **Create a reimbursement vault** for the shared Claude bill
+2. **Invite teammates** to join and lock their share upfront in USDC
+3. **Pay the Claude invoice offchain** as the designated payer
+4. **Claim reimbursement onchain** either through team approval or with a matching Reclaim zkTLS proof
 
-### Key Innovation: No Admin Holds the Money
+### Why this is better
 
-The vault issues a shared virtual card linked directly to the smart contract. Subscription fees are charged to the card automatically — no intermediary, no trust required. This eliminates the "admin rug-pull" risk entirely.
+- The payer no longer depends on repeated follow-ups
+- Free-riding gets harder because funds are locked upfront
+- The claim rules are explicit and shared by the whole team
+- Reclaim proof gives the payer a faster path when they can prove the Claude invoice was actually paid
+
+## Current Prototype Scope
+
+What is implemented:
+
+- React prototype with interactive screens
+- Reown AppKit login flow
+- Base Sepolia reimbursement vault contract flow
+- upfront deposit flow
+- monthly approval flow
+- Reclaim zkTLS proof claim flow for matching Claude invoices
+
+What is not implemented:
+
+- virtual cards
+- automatic offchain subscription payment rails
+- final withdrawal/refund logic for any rounding dust
 
 ## Tech Stack
 
-- **Frontend**: React (Claude Artifacts prototype)
-- **Auth**: Reown AppKit (social login + Account Abstraction)
-- **Smart Contract**: Solidity (ERC-4337 Smart Accounts, USDC vault)
-- **Network**: Base (L2)
-- **Payment**: Virtual card integration (Gnosis Pay / Holyheld pattern)
+- **Frontend**: React + Vite
+- **Wallet/Auth**: Reown AppKit
+- **Smart Contracts**: Solidity + Foundry
+- **Network**: Base Sepolia
+- **Payments**: USDC reimbursement vault
+- **Proof System**: Reclaim Protocol zkTLS proof verification
 
 ## Features
 
-- 🌐 Bilingual UI (한국어 / English)
-- 🔐 Social login — no wallet needed (Google, Discord, GitHub)
-- 💳 Virtual card auto-payment — no admin handles funds
-- 🔒 Smart contract escrow — funds locked for commitment period
-- 🌍 Cross-border ready — USDC eliminates currency friction
-- 👥 Multi-sig governance — early exit requires group vote
+- English/Korean UI
+- social login with smart-account onboarding
+- onchain vault creation, join, and deposit
+- approval-based monthly reimbursement
+- proof-based reimbursement acceleration through Reclaim
+- demo-safe Claude-focused happy path
 
-## Project Structure
+## Environment
 
+Frontend `.env`:
+
+```bash
+VITE_REOWN_PROJECT_ID=...
+VITE_FACTORY_ADDRESS=...
+VITE_RECLAIM_APP_SECRET=...
+VITE_RECLAIM_PROVIDER_ID=...
 ```
-Sub-Share/
-├── src/
-│   └── App.jsx          # Main prototype (React component)
-├── docs/
-│   └── PROJECT_REPORT.md # 프로젝트 보고서 (지속 업데이트)
-├── README.md
-└── .gitignore
+
+Foundry `contracts/.env`:
+
+```bash
+PRIVATE_KEY=...
+RECLAIM_PROVIDER_ID=...
+BASESCAN_API_KEY=... # optional
 ```
-
-## Context
-
-This project was built as part of the **ShardLab Product Intern Challenge** (48-hour deadline).
-
-ShardLab is the R&D innovation arm of Hashed, focused on solving real-world problems with blockchain technology. Sub-Share directly aligns with this mission — using Web3 infrastructure (smart contracts, account abstraction, stablecoin payments) to solve a real cost-sharing problem that existing Web2 tools can't address.
 
 ## Development
 
-The prototype is built as a React component designed to run in Claude Artifacts or any React environment.
+```bash
+npm install
+cp .env.example .env
+cp contracts/.env.example contracts/.env
+npm run contracts:build
+npm run contracts:test
+npm run dev
+```
+
+Deploy the updated factory:
 
 ```bash
-# Clone
-git clone https://github.com/blanco-3/Sub-Share.git
-
-# The main prototype is in src/App.jsx
-# Can be imported into any React project or viewed in Claude Artifacts
+npm run contracts:deploy:factory
 ```
+
+After deployment, put the new factory address in root `.env` as `VITE_FACTORY_ADDRESS`.
+
+## Context
+
+This project was built for the **ShardLab Product Intern Challenge**.
+
+The product focus is intentionally narrow: not generic bill splitting, but the moment when one hackathon teammate pays the Claude bill first and wants reimbursement without trust-heavy social follow-up.
 
 ## License
 

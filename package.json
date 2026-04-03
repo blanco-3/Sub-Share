@@ -6,14 +6,20 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "contracts:build": "cd contracts && forge build",
+    "contracts:test": "cd contracts && forge test",
+    "contracts:deploy:factory": "cd contracts && set -a && [ -f .env ] && . ./.env && set +a && forge script script/DeployFactory.s.sol:DeployFactory --rpc-url base_sepolia --broadcast",
+    "contracts:deploy:vault": "cd contracts && set -a && [ -f .env ] && . ./.env && set +a && forge script script/DeployVault.s.sol:DeployVault --rpc-url base_sepolia --broadcast"
   },
   "dependencies": {
+    "@reclaimprotocol/js-sdk": "^5.0.0",
     "@reown/appkit": "^1.8.19",
     "@reown/appkit-adapter-wagmi": "^1.8.19",
     "@tanstack/react-query": "^5.96.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-qr-code": "^2.0.18",
     "viem": "^2.47.6",
     "wagmi": "^3.6.0"
   },

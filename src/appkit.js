@@ -2,7 +2,8 @@ import { createAppKit } from '@reown/appkit/react'
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
 import { base, baseSepolia, mainnet } from '@reown/appkit/networks'
 
-export const projectId = 'b9b6bd0309117a0175490cece6ffccd9'
+export const projectId =
+  import.meta.env.VITE_REOWN_PROJECT_ID?.trim() || 'b9b6bd0309117a0175490cece6ffccd9'
 
 // baseSepolia first = default network for testing
 const networks = [baseSepolia, base, mainnet]
@@ -21,7 +22,7 @@ createAppKit({
   projectId,
   metadata: {
     name: 'Sub-Share',
-    description: 'Split subscriptions trustlessly.',
+    description: 'Claude reimbursement vault for hackathon teams.',
     url: 'https://sub-share.xyz',
     icons: [],
   },

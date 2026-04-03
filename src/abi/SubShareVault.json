@@ -31,6 +31,16 @@
         "name": "_creator",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "_reclaimVerifier",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_reclaimProviderId",
+        "type": "string",
+        "internalType": "string"
       }
     ],
     "stateMutability": "nonpayable"
@@ -97,6 +107,87 @@
     "type": "function",
     "name": "claimAfterGrace",
     "inputs": [
+      {
+        "name": "month",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claimWithProof",
+    "inputs": [
+      {
+        "name": "proof",
+        "type": "tuple",
+        "internalType": "struct Reclaim.Proof",
+        "components": [
+          {
+            "name": "claimInfo",
+            "type": "tuple",
+            "internalType": "struct Reclaim.ClaimInfo",
+            "components": [
+              {
+                "name": "provider",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "parameters",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "context",
+                "type": "string",
+                "internalType": "string"
+              }
+            ]
+          },
+          {
+            "name": "signedClaim",
+            "type": "tuple",
+            "internalType": "struct Reclaim.SignedClaim",
+            "components": [
+              {
+                "name": "claim",
+                "type": "tuple",
+                "internalType": "struct Reclaim.CompleteClaimData",
+                "components": [
+                  {
+                    "name": "identifier",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "owner",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "timestampS",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "epoch",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  }
+                ]
+              },
+              {
+                "name": "signatures",
+                "type": "bytes[]",
+                "internalType": "bytes[]"
+              }
+            ]
+          }
+        ]
+      },
       {
         "name": "month",
         "type": "uint256",
@@ -495,6 +586,32 @@
   },
   {
     "type": "function",
+    "name": "reclaimProviderId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reclaimVerifier",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "usdc",
     "inputs": [],
     "outputs": [
@@ -502,6 +619,25 @@
         "name": "",
         "type": "address",
         "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "usedProofs",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -583,6 +719,25 @@
         "name": "creator",
         "type": "address",
         "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PaymentClaimedViaProof",
+    "inputs": [
+      {
+        "name": "month",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "creator",
+        "type": "address",
+        "indexed": true,
         "internalType": "address"
       }
     ],
