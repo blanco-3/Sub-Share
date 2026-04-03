@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
-import { useDisconnect } from 'wagmi'
+import { useDisconnect, useChainId, useSwitchChain, useBalance, useSendTransaction } from 'wagmi'
+import { parseUnits } from 'viem'
+import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultClaim, useVaultInfo, useMyVaults, useIsAccountDeployed } from './useVault.js'
+import { CHAIN_ID } from './contracts.js'
 
 // ─── i18n ───
 const T = {
@@ -251,7 +254,7 @@ const T = {
   },
 };
 
-// plans[].price = per seat / month (USD, monthly billing)
+// plans[].price = monthly subscription price (USD) — one shared account, split evenly among nMem
 const SVCS = [
   { name: "Claude",         vendor: "Anthropic",    icon: "C",  color: "#D97706",
     plans: [{ label: "Pro", price: 20 }, { label: "Max 5x", price: 100 }, { label: "Max 20x", price: 200 }, { label: "Team", price: 30, note: "min 5 seats" }] },
@@ -287,7 +290,7 @@ const SVCS = [
     plans: [] },
 ];
 
-const SCR = { HOME: 0, ONBOARD: 1, CREATE: 2, INVITE: 3, DEPOSIT: 4, ACTIVE: 5, JOIN: 6 };
+const SCR = { HOME: 0, ONBOARD: 1, CREATE: 2, INVITE: 3, DEPOSIT: 4, ACTIVE: 5, JOIN: 6, MYVAULTS: 7 };
 const fmt = (n) => `$${n.toFixed(2)}`;
 
 const C = {
@@ -312,6 +315,13 @@ export default function App() {
   const authMethod = embeddedWalletInfo?.authProvider || (status === 'connected' ? 'wallet' : '');
   const authed = status === 'connected';
 
+  const chainId = useChainId();
+  const { switchChain } = useSwitchChain();
+  const { data: ethBalance } = useBalance({ address: address, chainId: CHAIN_ID, query: { enabled: !!address } });
+  const onRightChain = chainId === CHAIN_ID;
+  const hasGas = ethBalance && ethBalance.value > 0n;
+  const { sendTransactionAsync } = useSendTransaction();
+
   const [selSvc, setSelSvc] = useState(null);
   const [selPlan, setSelPlan] = useState(null);
   const [cName, setCName] = useState("");
@@ -334,6 +344,26 @@ export default function App() {
   const [joinCode, setJoinCode] = useState("");
   const [customMem, setCustomMem] = useState("");
   const [customDur, setCustomDur] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [vaultAddr, setVaultAddr] = useState(null);
+  const [deployTxHash, setDeployTxHash] = useState(null);
+  const [txStatus, setTxStatus] = useState(""); // user-facing tx status message
+  const [activating, setActivating] = useState(false);
+  const [activateDone, setActivateDone] = useState(false);
+
+  // on-chain hooks (always called at top level)
+  const { deploy, isDeploying: isOnChainDeploying } = useDeployVault();
+  const { deposit: depositOnChain, step: depositStep }  = useVaultDeposit(vaultAddr);
+  const { join: joinOnChain, isJoining }                = useVaultJoin(vaultAddr, address);
+  const { claim, isClaiming }                           = useVaultClaim(vaultAddr);
+  const { info: chainInfo, refetch: refetchInfo }       = useVaultInfo(vaultAddr);
+
+  // read vault info from chain for JOIN preview
+  const joinAddr = joinCode.match(/^0x[0-9a-fA-F]{40}$/) ? joinCode : null;
+  const { info: joinInfo }                              = useVaultInfo(joinAddr);
+  const { join: joinOnChainDirect, isJoining: isJoinDirect } = useVaultJoin(joinAddr, address);
+  const { vaults: myVaults, isLoading: myVaultsLoading, refresh: refreshMyVaults } = useMyVaults(address);
+  const accountDeployed = useIsAccountDeployed(address);
 
   // URL hash routing: /#/v/<vaultAddr>
   useEffect(() => {
@@ -344,33 +374,76 @@ export default function App() {
     }
   }, []);
 
-  const t = T[lang];
-  const go = (s) => { setFade(false); setTimeout(() => { setScr(s); setFade(true); }, 100); };
+  // Clear stale error messages when user logs in
+  useEffect(() => {
+    if (authed) setTxStatus('');
+  }, [authed]);
 
-  const doDeploy = () => {
+  const t = T[lang];
+  const go = (s) => { setFade(false); setTimeout(() => { setScr(s); setFade(true); if (s === SCR.JOIN) setTxStatus(''); }, 100); };
+
+  const doDeploy = async () => {
     setDeploying(true);
+    setTxStatus(lang === 'ko' ? '컨트랙트 배포 중...' : 'Deploying contract...');
     const sv = SVCS[selSvc];
     const isCustomSvc = sv.plans.length === 0;
-    const planLabel = isCustomSvc ? '' : sv.plans[selPlan].label;
-    const nm = isCustomSvc ? cName : `${sv.name} ${planLabel}`;
+    const nm = isCustomSvc ? cName : `${sv.name} ${sv.plans[selPlan].label}`;
     const pp = isCustomSvc ? parseFloat(cPrice) : sv.plans[selPlan].price;
-    const totalMonthly = pp * nMem;
-    setVault({ name: nm, price: totalMonthly, pp, dep: pp * dur, nMem, dur, color: sv.color, icon: sv.icon, addr: "0x5aB2c7D4...3eF1" });
-    setMembers([
-      { addr: "0x7a3B...9f2E", name: t.you, dep: false, joined: true, creator: true },
-      ...Array.from({ length: nMem - 1 }, (_, i) => ({
-        addr: `0x${Math.random().toString(16).slice(2,6)}...${Math.random().toString(16).slice(2,6)}`,
-        name: `Member ${i+2}`, dep: false, joined: false, creator: false,
-      })),
-    ]);
-    setMyDep(false); setCurMo(1); setPays([]);
-    setTimeout(() => { setDeploying(false); go(SCR.INVITE); }, 2200);
+    try {
+      const { vault: addr, txHash } = await deploy({ name: nm, monthlyPriceUSD: pp, nMembers: nMem, duration: dur });
+      setVaultAddr(addr);
+      setDeployTxHash(txHash);
+      setVault({ name: nm, price: pp, perPerson: pp/nMem, dep: pp*dur/nMem, nMem, dur, color: sv.color, icon: sv.icon, addr });
+      setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: true }]);
+      setMyDep(false); setCurMo(1); setPays([]);
+      setTxStatus('');
+      go(SCR.INVITE);
+    } catch (e) {
+      console.error('createVault error:', e);
+      const msg = e.shortMessage || e.details || e.message || String(e);
+      setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + msg);
+    } finally {
+      setDeploying(false);
+    }
   };
 
-  const doDeposit = () => { setDeping(true); setTimeout(() => { setDeping(false); setMyDep(true); setMembers(p => p.map(m => m.creator ? {...m, dep:true} : m)); }, 2000); };
+  const doDeposit = async () => {
+    if (!vaultAddr) return;
+    setDeping(true);
+    setTxStatus(lang === 'ko' ? 'USDC 승인 중...' : 'Approving USDC...');
+    try {
+      const depBig = parseUnits(String(vault.dep), 6);
+      await depositOnChain(depBig);
+      setMyDep(true);
+      setMembers(p => p.map(m => m.addr === address ? { ...m, dep: true } : m));
+      setTxStatus('');
+      await refetchInfo();
+    } catch (e) {
+      setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + (e.shortMessage || e.message || String(e)));
+    } finally {
+      setDeping(false);
+    }
+  };
+
   const simJoin = () => { setMembers(p => p.map(m => ({...m, joined:true}))); setTimeout(() => go(SCR.DEPOSIT), 400); };
-  const simDep = () => { setMembers(p => p.map(m => ({...m, dep:true, joined:true}))); setTimeout(() => go(SCR.ACTIVE), 500); };
-  const doPay = () => { setReleasing(true); setTimeout(() => { setReleasing(false); setPays(p => [...p, { mo: curMo, amt: vault.price, tx: `0x${Math.random().toString(16).slice(2,14)}` }]); setCurMo(m => m+1); }, 1500); };
+  const simDep  = () => { setMembers(p => p.map(m => ({...m, dep:true, joined:true}))); setTimeout(() => go(SCR.ACTIVE), 500); };
+
+  const doPay = async () => {
+    if (!vaultAddr) return;
+    setReleasing(true);
+    setTxStatus(lang === 'ko' ? '결제 클레임 중...' : 'Claiming payment...');
+    try {
+      const tx = await claim(curMo);
+      setPays(p => [...p, { mo: curMo, amt: vault.price, tx }]);
+      setCurMo(m => m + 1);
+      setTxStatus('');
+      await refetchInfo();
+    } catch (e) {
+      setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + (e.shortMessage || e.message || String(e)));
+    } finally {
+      setReleasing(false);
+    }
+  };
 
   // ── Components ──
   const font = '-apple-system, "Pretendard", "Helvetica Neue", sans-serif';
@@ -386,7 +459,7 @@ export default function App() {
     }} {...p}>{children}</button>
   );
 
-  const Card = ({children, style:sx}) => <div style={{ background:C.s1, border:`1px solid ${C.bd}`, borderRadius:16, padding:20, marginBottom:12, ...sx }}>{children}</div>;
+  const Card = ({children, style:sx, onClick}) => <div onClick={onClick} style={{ background:C.s1, border:`1px solid ${C.bd}`, borderRadius:16, padding:20, marginBottom:12, ...sx }}>{children}</div>;
   const Title = ({children}) => <h2 style={{ fontSize:21, fontWeight:700, marginBottom:6, fontFamily:font, lineHeight:1.3 }}>{children}</h2>;
   const Desc = ({children}) => <p style={{ color:C.t2, fontSize:13, lineHeight:1.6, marginBottom:24 }}>{children}</p>;
   const Label = ({children}) => <div style={{ fontSize:11, fontWeight:600, color:C.t3, marginBottom:8, textTransform:"uppercase", letterSpacing:"1px" }}>{children}</div>;
@@ -396,12 +469,7 @@ export default function App() {
   const Steps = ({cur, n}) => <div style={{ display:"flex", gap:5, marginBottom:28 }}>{Array.from({length:n},(_,i)=><div key={i} style={{ flex: i===cur?2.5:1, height:3, borderRadius:2, background: i<=cur?C.p:C.bd, transition:"all 0.4s" }}/>)}</div>;
 
   const LangToggle = () => (
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-      {authed ? (
-        <button onClick={() => disconnect()} style={{ background:"none", border:`1px solid ${C.bd}`, borderRadius:8, color:C.t3, fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font, padding:"5px 11px" }}>
-          {lang==='ko' ? '로그아웃' : 'Sign out'}
-        </button>
-      ) : <div />}
+    <div style={{ display:"flex", justifyContent:"flex-end", alignItems:"center", marginBottom:12 }}>
       <div style={{ display:"flex", background:C.s1, borderRadius:9, border:`1px solid ${C.bd}`, overflow:"hidden" }}>
         {["ko","en"].map(l => <button key={l} onClick={()=>setLang(l)} style={{ padding:"5px 13px", border:"none", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font, background: lang===l?C.pG:"transparent", color: lang===l?C.p:C.t4 }}>{l==="ko"?"한국어":"EN"}</button>)}
       </div>
@@ -493,22 +561,28 @@ export default function App() {
             <h1 style={{ fontSize:26, fontWeight:800, fontFamily:font, marginBottom:6 }}>{t.appName}</h1>
             <p style={{ fontSize:13, color:C.t2 }}>{t.tagline}</p>
           </div>
-          <Card style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24, border:`1px solid ${C.p}20` }}>
-            <div>
-              <div style={{ fontSize:10, color:C.t4, textTransform:"uppercase", letterSpacing:"1px", marginBottom:3 }}>{t.connected} · {t.smartAccount}</div>
-              <div style={{ fontSize:14, fontWeight:600, fontFamily:mono }}>
-                {embeddedWalletInfo?.user?.email || (address ? `${address.slice(0,6)}...${address.slice(-4)}` : '')}
+          <Card style={{ marginBottom:24, border:`1px solid ${C.p}20`, cursor:"pointer" }} onClick={() => open({ view: 'Account' })}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ fontSize:10, color:C.t4, textTransform:"uppercase", letterSpacing:"1px", marginBottom:3 }}>
+                  {t.connected} · {t.smartAccount}
+                  {authMethod && authMethod !== 'wallet' && <span style={{ marginLeft:6, background:`${C.p}20`, color:C.p, borderRadius:4, padding:"1px 5px", fontSize:9, textTransform:"none" }}>{authMethod}</span>}
+                </div>
+                <div style={{ fontSize:14, fontWeight:600, fontFamily:mono }}>
+                  {embeddedWalletInfo?.user?.email || (address ? `${address.slice(0,6)}...${address.slice(-4)}` : '')}
+                </div>
               </div>
-            </div>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ width:9, height:9, borderRadius:"50%", background:C.ok, boxShadow:`0 0 10px ${C.ok}` }} />
-              <button onClick={() => disconnect()} style={{ background:"none", border:"none", color:C.t4, fontSize:11, cursor:"pointer", fontFamily:font }}>
-                {lang === 'ko' ? '로그아웃' : 'Sign out'}
-              </button>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <div style={{ width:9, height:9, borderRadius:"50%", background:C.ok, boxShadow:`0 0 10px ${C.ok}` }} />
+                <span style={{ fontSize:11, color:C.t4 }}>{lang==='ko' ? '관리 →' : 'Manage →'}</span>
+              </div>
             </div>
           </Card>
           <Btn on={() => { setCStep(0); setSelSvc(null); go(SCR.ONBOARD); }} style={{ marginBottom:10 }}>{t.createVault}</Btn>
-          <Btn secondary on={() => go(SCR.JOIN)}>{t.joinVault}</Btn>
+          <Btn secondary on={() => go(SCR.JOIN)} style={{ marginBottom:10 }}>{t.joinVault}</Btn>
+          <Btn secondary on={() => { refreshMyVaults(); go(SCR.MYVAULTS); }} style={{ background:C.s2, border:`1px solid ${C.bd}` }}>
+            {lang==='ko' ? '내 볼트 보기' : 'My Vaults'}
+          </Btn>
         </div>
       )}
     </div>
@@ -546,11 +620,14 @@ export default function App() {
     const sv = selSvc !== null ? SVCS[selSvc] : null;
     const isCustomSvc = sv?.plans.length === 0;
     const pp = isCustomSvc ? (parseFloat(cPrice)||0) : (selPlan !== null ? sv.plans[selPlan].price : 0);
-    const pr = pp * nMem;
-    const td = pp * dur;
+    const perPersonMonthly = nMem > 0 ? pp / nMem : 0;
+    const depPerPerson = nMem > 0 ? pp * dur / nMem : 0;
     return (
-      <Wrap><Back to={cStep>0?SCR.CREATE:SCR.ONBOARD} />
-        {cStep>0 && <button onClick={()=>setCStep(cStep-1)} style={{ background:"none", border:"none", color:C.t3, fontSize:13, cursor:"pointer", fontFamily:font, marginBottom:8, marginTop:-16 }}>{t.back}</button>}
+      <Wrap>
+        {cStep === 0
+          ? <Back to={SCR.ONBOARD} />
+          : <button onClick={()=>setCStep(cStep-1)} style={{ background:"none", border:"none", color:C.t3, fontSize:13, cursor:"pointer", fontFamily:font, padding:"4px 0", marginBottom:20 }}>{t.back}</button>
+        }
         <Steps cur={cStep} n={3} />
         {cStep===0 && (<div>
           <Title>{t.selectService}</Title><Desc>{t.selectServiceDesc}</Desc>
@@ -558,8 +635,8 @@ export default function App() {
             const isSelected = selSvc === i;
             const isCustom = s.plans.length === 0;
             const priceRange = s.plans.length > 1
-              ? `${fmt(s.plans[0].price)} – ${fmt(s.plans[s.plans.length-1].price)}/seat/mo`
-              : s.plans.length === 1 ? `${fmt(s.plans[0].price)}/seat/mo` : t.customAmount;
+              ? `${fmt(s.plans[0].price)} – ${fmt(s.plans[s.plans.length-1].price)}/mo`
+              : s.plans.length === 1 ? `${fmt(s.plans[0].price)}/mo` : t.customAmount;
             return (
               <div key={i}>
                 <button onClick={() => {
@@ -587,7 +664,7 @@ export default function App() {
                         border:"none", borderTop:`1px solid ${s.color}20`, cursor:"pointer", textAlign:"left",
                       }}>
                         <div style={{ fontSize:13, fontWeight:600, color:C.tx }}>{p.label}</div>
-                        <div style={{ fontSize:12, color:s.color, fontWeight:700 }}>{fmt(p.price)}/seat</div>
+                        <div style={{ fontSize:12, color:s.color, fontWeight:700 }}>{fmt(p.price)}/mo</div>
                         {p.note && <div style={{ fontSize:10, color:C.t4, marginTop:2 }}>{p.note}</div>}
                       </button>
                     ))}
@@ -596,7 +673,7 @@ export default function App() {
                 {isSelected && isCustom && (
                   <div style={{ border:`1px solid ${s.color}50`, borderTop:"none", borderRadius:"0 0 14px 14px", padding:14, background:C.s2, marginBottom:9 }}>
                     <Label>{t.serviceName}</Label><Input value={cName} onChange={e=>setCName(e.target.value)} placeholder="e.g. Linear" style={{marginBottom:10}} />
-                    <Label>{t.monthlyPrice} (per seat)</Label><Input value={cPrice} onChange={e=>setCPrice(e.target.value.replace(/[^0-9.]/g,""))} placeholder="0.00" inputMode="decimal" />
+                    <Label>{t.monthlyPrice}</Label><Input value={cPrice} onChange={e=>setCPrice(e.target.value.replace(/[^0-9.]/g,""))} placeholder="0.00" inputMode="decimal" />
                     {cName&&cPrice && <Btn on={()=>setCStep(1)} style={{marginTop:12}}>{t.next}</Btn>}
                   </div>
                 )}
@@ -640,7 +717,7 @@ export default function App() {
                 <div style={{ fontSize:12, color:C.t4 }}>{sv?.vendor || 'Custom'} · Subscription Vault</div>
               </div>
             </div>
-            {[[t.monthlyCost,fmt(pr)],[t.members,`${nMem} ${t.people}`],[t.perPerson,fmt(pp)],[t.durationLabel,`${dur}${t.mo}`],[t.depositRequired,fmt(td)]].map(([l,v],i) => (
+            {[[t.monthlyCost,fmt(pp)],[t.members,`${nMem} ${t.people}`],[t.perPerson,fmt(perPersonMonthly)],[t.durationLabel,`${dur}${t.mo}`],[t.depositRequired,fmt(depPerPerson)]].map(([l,v],i) => (
               <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderTop:i>0?`1px solid ${C.bd}`:"none" }}>
                 <span style={{ fontSize:13, color:C.t2 }}>{l}</span><span style={{ fontSize:13, fontWeight:600 }}>{v}</span>
               </div>
@@ -650,7 +727,47 @@ export default function App() {
             <div style={{ fontSize:11, color:C.ac, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.5px", marginBottom:4 }}>{t.howSafe}</div>
             <div style={{ fontSize:12, color:C.t2, lineHeight:1.6 }}>{t.howSafeDesc}</div>
           </Card>
-          <Btn on={doDeploy} disabled={deploying}>{deploying?t.deploying:t.deployBtn}</Btn>
+          {/* Chain check */}
+          {!onRightChain && (
+            <div style={{ background:'#FBBF2415', border:'1px solid #FBBF2440', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+              <div style={{ fontSize:12, color:C.wn, fontWeight:600, marginBottom:6 }}>
+                {lang==='ko' ? '⚠️ Base Sepolia로 네트워크를 전환하세요' : '⚠️ Switch to Base Sepolia'}
+              </div>
+              <div style={{ fontSize:11, color:C.t2, marginBottom:8 }}>
+                {lang==='ko' ? `현재 네트워크: ${chainId}` : `Current chain: ${chainId}`}
+              </div>
+              <button onClick={() => switchChain({ chainId: CHAIN_ID })}
+                style={{ fontSize:12, fontWeight:600, padding:'7px 14px', borderRadius:8, background:C.wn, color:'#000', border:'none', cursor:'pointer' }}>
+                Switch to Base Sepolia
+              </button>
+            </div>
+          )}
+          {onRightChain && ethBalance !== undefined && !hasGas && (
+            <div style={{ background:'#EF444415', border:'1px solid #EF444430', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+              <div style={{ fontSize:12, color:C.er, fontWeight:600, marginBottom:4 }}>
+                {lang==='ko' ? '⚠️ 가스비 없음 (Base Sepolia ETH 필요)' : '⚠️ No gas (need Base Sepolia ETH)'}
+              </div>
+              <div style={{ fontSize:11, color:C.t2 }}>
+                {lang==='ko' ? '아래 파우셋에서 무료 ETH를 받으세요:' : 'Get free ETH from the faucet:'}
+                {' '}<a href={`https://learnweb3.io/faucets/base_sepolia${address ? `?address=${address}` : ''}`} target="_blank" rel="noreferrer"
+                  style={{ color:C.ac, textDecoration:'underline' }}>LearnWeb3 Faucet</a>
+              </div>
+            </div>
+          )}
+          {onRightChain && hasGas && (
+            <div style={{ fontSize:11, color:C.t4, marginBottom:8, textAlign:'right' }}>
+              Gas: {parseFloat(ethBalance.formatted).toFixed(4)} ETH
+            </div>
+          )}
+          {txStatus && (
+            <div style={{ fontSize:12, padding:'10px 14px', borderRadius:10, marginBottom:10,
+              background: txStatus.includes('Error')||txStatus.includes('오류') ? '#EF444415' : '#FBBF2415',
+              color: txStatus.includes('Error')||txStatus.includes('오류') ? C.er : C.wn,
+              wordBreak:'break-all' }}>
+              {txStatus}
+            </div>
+          )}
+          <Btn on={doDeploy} disabled={deploying || !onRightChain}>{deploying ? t.deploying : t.deployBtn}</Btn>
         </div>)}
       </Wrap>
     );
@@ -658,31 +775,50 @@ export default function App() {
 
   // INVITE
   if (scr === SCR.INVITE) {
+    const totalSlots = vault?.nMem || members.length;
     const jc = members.filter(m=>m.joined).length;
-    const all = jc===members.length;
+    const all = jc === totalSlots;
     const link = `${window.location.origin}${window.location.pathname}#/v/${encodeURIComponent(vault.addr)}`;
     const shareText = lang==='ko' ? `Sub-Share 볼트에 참여하세요: ${vault.name}` : `Join my Sub-Share vault: ${vault.name}`;
     const copyLink = () => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
-    const shareActions = [
-      { label: t.shareDiscord,  on: () => { navigator.clipboard.writeText(`${shareText}\n${link}`); alert('Discord에 붙여넣을 수 있도록 복사됐어요'); } },
-      { label: t.shareTelegram, on: () => window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`, '_blank') },
-      { label: t.shareSlack,    on: () => { navigator.clipboard.writeText(`${shareText}\n${link}`); alert('Slack에 붙여넣을 수 있도록 복사됐어요'); } },
-    ];
     return (
       <Wrap><Back to={SCR.HOME} /><VaultHead />
         <Title>{t.inviteTitle}</Title><Desc>{t.inviteDesc}</Desc>
+        {/* Deploy tx info */}
+        {deployTxHash && (
+          <Card style={{ background:'#10B98110', border:`1px solid ${C.ok}30`, padding:'12px 14px', marginBottom:4 }}>
+            <div style={{ fontSize:11, color:C.ok, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:6 }}>
+              ✅ {lang==='ko' ? '컨트랙트 배포 완료' : 'Contract deployed'}
+            </div>
+            <div style={{ fontSize:11, color:C.t3, marginBottom:4 }}>
+              {lang==='ko' ? '볼트 주소' : 'Vault address'}:
+              <span style={{ color:C.ac, fontFamily:mono, marginLeft:4, wordBreak:'break-all' }}>{vault?.addr}</span>
+            </div>
+            <div style={{ fontSize:11, color:C.t3, marginBottom:6 }}>
+              {lang==='ko' ? 'Tx 해시' : 'Tx hash'}:
+              <span style={{ color:C.t2, fontFamily:mono, marginLeft:4 }}>{deployTxHash.slice(0,10)}...{deployTxHash.slice(-8)}</span>
+            </div>
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+              <a href={`https://sepolia.basescan.org/tx/${deployTxHash}`} target="_blank" rel="noreferrer"
+                style={{ fontSize:12, color:C.ac, textDecoration:'none', fontWeight:600 }}>
+                Basescan Tx ↗
+              </a>
+              <a href={`https://sepolia.basescan.org/address/${vault?.addr}#code`} target="_blank" rel="noreferrer"
+                style={{ fontSize:12, color:C.p, textDecoration:'none', fontWeight:600 }}>
+                {lang==='ko' ? '컨트랙트 코드 ↗' : 'Contract Code ↗'}
+              </a>
+            </div>
+          </Card>
+        )}
         <Card style={{ background:C.s2 }}>
           <Label>{t.vaultLink}</Label>
           <div style={{ padding:"11px 13px", background:C.bg, borderRadius:10, fontSize:12, color:C.ac, fontFamily:mono, wordBreak:"break-all", marginBottom:12, border:`1px solid ${C.bd}` }}>{link}</div>
-          <Btn on={copyLink} style={{ marginBottom:8 }}>{copied?t.copied:t.copyLink}</Btn>
-          <div style={{ display:"flex", gap:7 }}>
-            {shareActions.map((s,i) => <Btn key={i} secondary on={s.on} style={{ flex:1, padding:12, fontSize:12 }}>{s.label}</Btn>)}
-          </div>
+          <Btn on={copyLink}>{copied?t.copied:t.copyLink}</Btn>
         </Card>
-        <Label>{all ? t.allJoined : t.joined.replace("{n}",jc).replace("{t}",members.length)}</Label>
-        <div style={{ height:4, background:C.bd, borderRadius:2, marginBottom:14 }}><div style={{ height:"100%", width:`${(jc/members.length)*100}%`, background:C.ok, borderRadius:2, transition:"width 0.5s" }} /></div>
+        <Label>{all ? t.allJoined : t.joined.replace("{n}",jc).replace("{t}",totalSlots)}</Label>
+        <div style={{ height:4, background:C.bd, borderRadius:2, marginBottom:14 }}><div style={{ height:"100%", width:`${(jc/totalSlots)*100}%`, background:C.ok, borderRadius:2, transition:"width 0.5s" }} /></div>
         {members.map((m,i) => <MemberRow key={i} m={m} i={i} showDep={false} />)}
-        {!all ? <div style={{marginTop:12}}><div style={{textAlign:"center",color:C.t4,fontSize:12,marginBottom:10}}>{t.waiting.replace("{n}",members.length-jc)}</div><Btn secondary on={simJoin}>{t.simJoin}</Btn></div>
+        {!all ? <div style={{marginTop:12}}><div style={{textAlign:"center",color:C.t4,fontSize:12,marginBottom:10}}>{t.waiting.replace("{n}",totalSlots-jc)}</div><Btn secondary on={simJoin}>{t.simJoin}</Btn></div>
         : <Btn on={()=>go(SCR.DEPOSIT)} style={{marginTop:12}}>{t.proceed}</Btn>}
       </Wrap>
     );
@@ -700,7 +836,14 @@ export default function App() {
             <div style={{ fontSize:10, color:C.t4, textTransform:"uppercase", letterSpacing:"1px", marginBottom:8 }}>{t.yourShare}</div>
             <div style={{ fontSize:32, fontWeight:800, fontFamily:font, marginBottom:4 }}>{fmt(vault.dep)}</div>
             <div style={{ fontSize:12, color:C.t3, marginBottom:20 }}>USDC</div>
-            <Btn on={doDeposit} disabled={deping}>{deping ? t.depositing : t.depositBtn.replace("{a}",fmt(vault.dep))}</Btn>
+            {txStatus && <div style={{ fontSize:11, color: txStatus.includes('Error')||txStatus.includes('오류') ? C.er : C.wn, marginBottom:10, padding:'8px', background:'#FBBF2410', borderRadius:8 }}>{txStatus}</div>}
+            <Btn on={doDeposit} disabled={deping}>
+              {deping
+                ? (depositStep === 'approving'
+                    ? (lang==='ko' ? 'USDC 승인 중...' : 'Approving USDC...')
+                    : (lang==='ko' ? '입금 중...' : 'Depositing...'))
+                : t.depositBtn.replace("{a}", fmt(vault.dep))}
+            </Btn>
           </Card>
         )}
         {myDep && <Card style={{ background:C.okG, border:`1px solid ${C.ok}20`, textAlign:"center", padding:14 }}><span style={{ color:C.ok, fontSize:13, fontWeight:600 }}>{t.depositDone}</span></Card>}
@@ -715,9 +858,11 @@ export default function App() {
 
   // ACTIVE
   if (scr === SCR.ACTIVE) {
-    const tp = pays.length * vault.price;
-    const rem = vault.price * vault.dur - tp;
-    const prog = (pays.length/vault.dur)*100;
+    const onChainBalance = chainInfo ? Number(chainInfo.balance) / 1e6 : null;
+    const onChainClaimed = chainInfo ? chainInfo.monthsClaimed : null;
+    const tp   = pays.length * vault.price;
+    const rem  = onChainBalance !== null ? onChainBalance : (vault.price * vault.dur - tp);
+    const prog = ((onChainClaimed !== null ? onChainClaimed : pays.length) / vault.dur) * 100;
     const canPay = curMo <= vault.dur;
     return (
       <Wrap><Back to={SCR.HOME} /><VaultHead />
@@ -744,7 +889,8 @@ export default function App() {
             <div style={{ textAlign:"right" }}><div style={{ fontSize:14, fontWeight:700, color:C.ok }}>{fmt(p.amt)}</div><div style={{ fontSize:10, color:C.t4 }}>{t.paymentTo}</div></div>
           </Card>
         ))}
-        {canPay && <Btn on={doPay} disabled={releasing} style={{marginTop:8}}>{releasing?t.releasing:t.releaseBtn.replace("{n}",curMo)}</Btn>}
+        {txStatus && <div style={{ fontSize:11, color: txStatus.includes('Error')||txStatus.includes('오류') ? C.er : C.wn, textAlign:'center', marginBottom:8, padding:'8px 12px', background: txStatus.includes('Error')||txStatus.includes('오류') ? '#EF444410':'#FBBF2410', borderRadius:8 }}>{txStatus}</div>}
+        {canPay && <Btn on={doPay} disabled={releasing||isClaiming} style={{marginTop:8}}>{releasing||isClaiming ? t.releasing : t.releaseBtn.replace("{n}",curMo)}</Btn>}
         {!canPay && (<>
           <Card style={{ background:C.okG, border:`1px solid ${C.ok}20`, textAlign:"center", marginTop:8, padding:22 }}>
             <div style={{ fontSize:20, marginBottom:6 }}>✓</div>
@@ -759,21 +905,291 @@ export default function App() {
 
   // JOIN
   if (scr === SCR.JOIN) {
+    const isCreatorJoining = !!(joinInfo && address && joinInfo.creator?.toLowerCase() === address.toLowerCase());
+    const isAlreadyMember = isCreatorJoining;
+    const needsActivation = authed && accountDeployed === false; // counterfactual smart account
+    const accountChecking = authed && accountDeployed === null; // still loading
+
+    const handleActivate = async () => {
+      setActivating(true);
+      setTxStatus(lang==='ko' ? '계정 활성화 중...' : 'Activating account...');
+      try {
+        // Send 0-value tx to self to trigger counterfactual account deployment
+        const tx = await sendTransactionAsync({
+          to: address,
+          value: 0n,
+          chainId: CHAIN_ID,
+        });
+        await new Promise(r => setTimeout(r, 3000)); // wait for indexing
+        setActivateDone(true);
+        setTxStatus(lang==='ko' ? '활성화 완료! 이제 Join을 눌러주세요.' : 'Activated! Now click Join.');
+      } catch (e) {
+        console.error('activate error:', e);
+        setTxStatus((lang==='ko'?'활성화 오류: ':'Activate error: ') + (e.shortMessage || e.message || String(e)));
+      } finally {
+        setActivating(false);
+      }
+    };
+
+    const handleJoin = async () => {
+      if (!joinAddr) return;
+      if (!authed) { setTxStatus(lang==='ko'?'오류: 먼저 로그인하세요':'Error: Please log in first'); return; }
+      if (isAlreadyMember) { setTxStatus(lang==='ko'?'오류: 이 주소는 이미 볼트 멤버입니다':'Error: This address is already a member'); return; }
+      if (!onRightChain) { setTxStatus(lang==='ko'?'오류: Base Sepolia 네트워크로 전환하세요':'Error: Switch to Base Sepolia'); return; }
+      if (ethBalance !== undefined && ethBalance.value === 0n) {
+        setTxStatus(lang==='ko'
+          ? '오류: 가스비 없음. 파우셋에서 ETH를 받으세요. (주소: ' + address + ')'
+          : 'Error: No ETH for gas. Get faucet ETH. (address: ' + address + ')');
+        return;
+      }
+      setJoining(true);
+      setTxStatus(lang==='ko'?'볼트 참여 중...':'Joining vault...');
+      try {
+        await joinOnChainDirect();
+        // Load vault state
+        const ji = joinInfo;
+        if (ji) {
+          setVaultAddr(joinAddr);
+          setVault({
+            name: ji.name, price: Number(ji.monthlyPrice)/1e6,
+            perPerson: Number(ji.monthlyPrice)/1e6/ji.nMembers,
+            dep: Number(ji.depositPerPerson)/1e6,
+            nMem: ji.nMembers, dur: ji.duration,
+            color: '#6366f1', icon: '◈', addr: joinAddr,
+          });
+          setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: false }]);
+        }
+        setMyDep(false); setPays([]); setCurMo(1);
+        setTxStatus('');
+        go(SCR.DEPOSIT);
+      } catch (e) {
+        // Deep-extract the real bundler error (Reown wraps it several layers deep)
+        const allProps = Object.getOwnPropertyNames(e);
+        console.error('[SubShare] join error raw:', e);
+        console.error('[SubShare] join error json:', JSON.stringify(e, allProps));
+        console.error('[SubShare] cause chain:',
+          'L1:', e.cause?.message,
+          'L2:', e.cause?.cause?.message,
+          'L3:', e.cause?.cause?.cause?.message,
+          'details:', e.details,
+          'metaMessages:', e.metaMessages,
+        );
+        const bundlerMsg =
+          e.cause?.cause?.message ||
+          e.cause?.cause?.cause?.message ||
+          e.cause?.reason ||
+          e.details ||
+          null;
+        const surfaceMsg = e.shortMessage || e.message || String(e);
+        const msg = bundlerMsg || surfaceMsg;
+
+        const isUnknown = surfaceMsg.toLowerCase().includes('unknown error');
+        let display = msg;
+        if (isUnknown && !bundlerMsg) {
+          // No bundler detail found — guess based on context
+          if (accountDeployed === false) {
+            display = lang==='ko'
+              ? '지갑 활성화가 필요합니다. 위의 "지갑 활성화" 버튼을 먼저 눌러주세요.'
+              : 'Wallet activation required. Tap "Activate Wallet" above first.';
+          } else if (!ethBalance || ethBalance.value === 0n) {
+            display = lang==='ko'
+              ? '가스비 부족. 파우셋에서 ETH를 받으세요: ' + address
+              : 'No gas ETH. Get faucet ETH: ' + address;
+          } else {
+            display = lang==='ko'
+              ? '트랜잭션 실패. 브라우저 콘솔(F12)에서 실제 오류를 확인하세요.'
+              : 'Transaction failed. Check browser console (F12) for details.';
+          }
+        }
+        setTxStatus((lang==='ko'?'오류: ':'Error: ') + display);
+      } finally {
+        setJoining(false);
+      }
+    };
     return (
       <Wrap><Back to={SCR.HOME} />
         <Title>{t.joinTitle}</Title><Desc>{t.joinDesc}</Desc>
         <Label>{t.vaultAddr}</Label>
-        <Input value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder={`${window.location.origin}/#/v/...`} style={{marginBottom:16}} />
-        <Btn disabled={joinCode.length<4} on={() => {
-          setVault({ name:"Claude Team", price:30, pp:7.5, dep:22.5, nMem:4, dur:3, color:"#D97706", icon:"◈", addr:"0x5aB2c7D4...3eF1" });
-          setMembers([
-            { addr:"0x4c1D...8aF3", name:"Creator", dep:true, joined:true, creator:true },
-            { addr:"0x7a3B...9f2E", name:t.you, dep:false, joined:true, creator:false },
-            { addr:"0x9e2F...3bC7", name:"Member 3", dep:true, joined:true, creator:false },
-            { addr:"0x1f8A...6dE2", name:"Member 4", dep:false, joined:true, creator:false },
-          ]);
-          setMyDep(false); setPays([]); setCurMo(1); go(SCR.DEPOSIT);
-        }}>{t.joinBtn}</Btn>
+        <Input value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="0x..." style={{marginBottom:12}} />
+        {joinInfo && (
+          <Card style={{ marginBottom:14, border:`1px solid ${C.p}30` }}>
+            <div style={{ fontSize:13, fontWeight:700, marginBottom:6 }}>{joinInfo.name}</div>
+            {[
+              [lang==='ko'?'월 구독료':'Monthly', `$${(Number(joinInfo.monthlyPrice)/1e6).toFixed(2)}`],
+              [lang==='ko'?'인원':'Members', `${joinInfo.depositedCount}/${joinInfo.nMembers}`],
+              [lang==='ko'?'기간':'Duration', `${joinInfo.duration}${t.mo}`],
+              [lang==='ko'?'내 선입금':'My deposit', `$${(Number(joinInfo.depositPerPerson)/1e6).toFixed(2)} USDC`],
+            ].map(([l,v],i) => (
+              <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:12, padding:'5px 0', borderTop: i>0?`1px solid ${C.bd}`:'none' }}>
+                <span style={{ color:C.t3 }}>{l}</span><span style={{ fontWeight:600 }}>{v}</span>
+              </div>
+            ))}
+          </Card>
+        )}
+        {!joinAddr && joinCode.length > 3 && (
+          <div style={{ fontSize:11, color:C.wn, marginBottom:10 }}>{lang==='ko'?'유효한 0x 주소를 입력하세요':'Enter a valid 0x address'}</div>
+        )}
+        {/* Current account info for debugging */}
+        {joinInfo && authed && (
+          <div style={{ fontSize:11, color:C.t4, background:C.s2, borderRadius:8, padding:'7px 10px', marginBottom:10, fontFamily:mono, wordBreak:'break-all' }}>
+            {lang==='ko' ? '내 주소: ' : 'My address: '}{address}
+          </div>
+        )}
+        {/* Counterfactual account activation required */}
+        {needsActivation && !activateDone && (
+          <div style={{ background:'#6366f115', border:`1px solid ${C.p}40`, borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.p, fontWeight:700, marginBottom:4 }}>
+              {lang==='ko' ? '⚡ 지갑 첫 사용 — 활성화 필요' : '⚡ First use — activation required'}
+            </div>
+            <div style={{ fontSize:11, color:C.t2, marginBottom:10, lineHeight:1.5 }}>
+              {lang==='ko'
+                ? '새 Reown 임베디드 지갑은 첫 트랜잭션 전에 온체인 활성화가 필요해요. 아래 버튼을 누르면 자동으로 처리돼요.'
+                : 'New Reown embedded wallets need on-chain activation before the first tx. Tap below to activate.'}
+            </div>
+            <button onClick={handleActivate} disabled={activating || !hasGas}
+              style={{ fontSize:12, fontWeight:700, padding:'8px 16px', borderRadius:8,
+                background: activating ? C.s2 : C.p, color: activating ? C.t3 : '#fff',
+                border:'none', cursor: activating ? 'not-allowed' : 'pointer', width:'100%' }}>
+              {activating
+                ? (lang==='ko' ? '활성화 중...' : 'Activating...')
+                : (lang==='ko' ? '지갑 활성화' : 'Activate Wallet')}
+            </button>
+          </div>
+        )}
+        {/* Creator cannot join again */}
+        {isCreatorJoining && (
+          <div style={{ background:'#EF444415', border:'1px solid #EF444430', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.er, fontWeight:700, marginBottom:4 }}>
+              {lang==='ko' ? '⚠️ 볼트 생성자입니다' : '⚠️ You are the vault creator'}
+            </div>
+            <div style={{ fontSize:11, color:C.t2 }}>
+              {lang==='ko'
+                ? '생성자는 이미 멤버입니다. 다른 계정으로 로그인하여 팀원으로 참여하세요.'
+                : 'The creator is already a member. Log in with a different account to join as a member.'}
+            </div>
+          </div>
+        )}
+        {/* Chain check for join */}
+        {joinAddr && !onRightChain && (
+          <div style={{ background:'#FBBF2415', border:'1px solid #FBBF2440', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.wn, fontWeight:600, marginBottom:6 }}>
+              {lang==='ko' ? '⚠️ Base Sepolia로 네트워크 전환 필요' : '⚠️ Switch to Base Sepolia'}
+            </div>
+            <button onClick={() => switchChain({ chainId: CHAIN_ID })}
+              style={{ fontSize:12, fontWeight:600, padding:'7px 14px', borderRadius:8, background:C.wn, color:'#000', border:'none', cursor:'pointer' }}>
+              Switch to Base Sepolia
+            </button>
+          </div>
+        )}
+        {joinAddr && onRightChain && ethBalance !== undefined && !hasGas && (
+          <div style={{ background:'#EF444415', border:'1px solid #EF444430', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.er, fontWeight:600, marginBottom:4 }}>
+              {lang==='ko' ? '⚠️ 가스비 없음 (Base Sepolia ETH 필요)' : '⚠️ No gas (need Base Sepolia ETH)'}
+            </div>
+            <div style={{ fontSize:11, color:C.t2 }}>
+              <a href={`https://learnweb3.io/faucets/base_sepolia${address ? `?address=${address}` : ''}`} target="_blank" rel="noreferrer"
+                style={{ color:C.ac, textDecoration:'underline' }}>LearnWeb3 Faucet</a>
+              {lang==='ko' ? '에서 무료 ETH를 받으세요' : ' — get free ETH'}
+            </div>
+          </div>
+        )}
+        {txStatus && <div style={{ fontSize:11, color: txStatus.startsWith('볼트')||txStatus.startsWith('Join') ? C.wn : C.er, marginBottom:10, padding:'8px', background: txStatus.startsWith('볼트')||txStatus.startsWith('Join') ? '#FBBF2410' : '#EF444410', borderRadius:8, wordBreak:'break-all' }}>{txStatus}</div>}
+        <Btn disabled={!joinAddr || joining || isJoinDirect || !onRightChain || isAlreadyMember || (ethBalance !== undefined && ethBalance.value === 0n) || (needsActivation && !activateDone) || accountChecking} on={handleJoin}>
+          {joining || isJoinDirect ? (lang==='ko'?'참여 중...':'Joining...') : accountChecking ? (lang==='ko'?'계정 확인 중...':'Checking account...') : t.joinBtn}
+        </Btn>
+      </Wrap>
+    );
+  }
+
+  // MY VAULTS
+  if (scr === SCR.MYVAULTS) {
+    const goToVault = (v) => {
+      setVaultAddr(v.addr);
+      setVault({
+        name: v.name, price: Number(v.monthlyPrice)/1e6,
+        perPerson: Number(v.monthlyPrice)/1e6/v.nMembers,
+        dep: Number(v.depositPerPerson)/1e6,
+        nMem: v.nMembers, dur: v.duration,
+        color: '#6366f1', icon: '◈', addr: v.addr,
+      });
+      setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: v.isCreator }]);
+      setMyDep(false); setPays([]); setCurMo(1);
+      if (v.isActive) go(SCR.ACTIVE);
+      else if (v.isCreator) go(SCR.INVITE);
+      else go(SCR.DEPOSIT);
+    };
+
+    return (
+      <Wrap>
+        <Back to={SCR.HOME} />
+        <Title>{lang==='ko' ? '내 볼트' : 'My Vaults'}</Title>
+        <Desc>{lang==='ko' ? '내가 참여 중인 구독 볼트 목록이에요.' : 'All subscription vaults you are part of.'}</Desc>
+        {myVaultsLoading && (
+          <div style={{ textAlign:'center', color:C.t4, fontSize:13, padding:'40px 0' }}>
+            {lang==='ko' ? '체인에서 불러오는 중...' : 'Loading from chain...'}
+          </div>
+        )}
+        {!myVaultsLoading && myVaults.length === 0 && (
+          <div style={{ textAlign:'center', padding:'40px 0' }}>
+            <div style={{ fontSize:32, marginBottom:12 }}>◈</div>
+            <div style={{ fontSize:14, color:C.t3, marginBottom:6 }}>
+              {lang==='ko' ? '아직 참여한 볼트가 없어요' : 'No vaults yet'}
+            </div>
+            <div style={{ fontSize:12, color:C.t4, marginBottom:20 }}>
+              {lang==='ko' ? '볼트를 만들거나 초대 링크로 참여해보세요.' : 'Create a vault or join one via invite link.'}
+            </div>
+            <Btn on={() => { setCStep(0); setSelSvc(null); go(SCR.ONBOARD); }} style={{ marginBottom:8 }}>{t.createVault}</Btn>
+            <Btn secondary on={() => go(SCR.JOIN)}>{t.joinVault}</Btn>
+          </div>
+        )}
+        {myVaults.map((v, i) => {
+          const monthly = Number(v.monthlyPrice)/1e6;
+          const dep = Number(v.depositPerPerson)/1e6;
+          const bal = Number(v.balance)/1e6;
+          const statusColor = v.isActive ? C.ok : C.wn;
+          const statusLabel = v.isActive
+            ? (lang==='ko' ? '활성' : 'Active')
+            : (lang==='ko' ? '대기중' : 'Pending');
+          return (
+            <Card key={v.addr} style={{ marginBottom:12, cursor:'pointer', border:`1px solid ${v.isActive ? C.ok+'30' : C.bd}` }}
+              onClick={() => goToVault(v)}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
+                <div>
+                  <div style={{ fontSize:15, fontWeight:700, marginBottom:3 }}>{v.name}</div>
+                  <div style={{ fontSize:11, color:C.t4 }}>
+                    {v.isCreator ? (lang==='ko'?'👑 생성자':'👑 Creator') : (lang==='ko'?'👤 멤버':'👤 Member')}
+                    {' · '}{v.nMembers}{lang==='ko'?'인':'p'} · {v.duration}{t.mo}
+                  </div>
+                </div>
+                <span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:6, background:`${statusColor}15`, color:statusColor }}>
+                  {statusLabel}
+                </span>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+                {[
+                  [lang==='ko'?'월 구독료':'Monthly', `$${monthly.toFixed(2)}`],
+                  [lang==='ko'?'선입금':'Deposit', `$${dep.toFixed(2)}`],
+                  [lang==='ko'?'볼트 잔액':'Balance', `$${bal.toFixed(2)}`],
+                ].map(([l, val]) => (
+                  <div key={l} style={{ background:C.s2, borderRadius:8, padding:'8px 10px' }}>
+                    <div style={{ fontSize:10, color:C.t4, marginBottom:2 }}>{l}</div>
+                    <div style={{ fontSize:13, fontWeight:700 }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop:10, fontSize:11, color:C.t3, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span style={{ fontFamily:mono }}>{v.addr.slice(0,8)}...{v.addr.slice(-6)}</span>
+                <span style={{ color:C.p, fontWeight:600 }}>{lang==='ko'?'열기 →':'Open →'}</span>
+              </div>
+            </Card>
+          );
+        })}
+        {!myVaultsLoading && myVaults.length > 0 && (
+          <button onClick={refreshMyVaults}
+            style={{ width:'100%', padding:'10px', marginTop:4, background:'none', border:`1px solid ${C.bd}`, borderRadius:10, color:C.t3, fontSize:12, cursor:'pointer', fontFamily:font }}>
+            {lang==='ko' ? '새로고침' : 'Refresh'}
+          </button>
+        )}
       </Wrap>
     );
   }

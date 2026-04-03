@@ -3,3 +3,7 @@ dist/
 .env
 .DS_Store
 *.log
+/contracts/.env
+/contracts/out/
+/contracts/cache/
+/contracts/lib/
