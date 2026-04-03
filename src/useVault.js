@@ -169,15 +169,15 @@ export function useVaultJoin(vaultAddress, userAddress) {
   return { join, isJoining }
 }
 
-// ─── Claim monthly payment (creator) ─────────────────────────────────────────
-export function useVaultClaim(vaultAddress) {
-  const [isClaiming, setIsClaiming] = useState(false)
+// ─── Approve monthly payment (any member votes; auto-releases at n-of-n) ──────
+export function useVaultApprove(vaultAddress) {
+  const [isApproving, setIsApproving] = useState(false)
   const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
-  const claim = useCallback(async (month) => {
+  const approve = useCallback(async (month) => {
     if (!vaultAddress) return
-    setIsClaiming(true)
+    setIsApproving(true)
     try {
       const wc = makeFixedClient(connectorClient)
       if (!wc) throw new Error('Wallet not connected')
@@ -185,18 +185,40 @@ export function useVaultClaim(vaultAddress) {
       const tx = await wc.writeContract({
         address: vaultAddress,
         abi: VAULT_ABI,
-        functionName: 'claimMonthlyPayment',
+        functionName: 'approvePayment',
         args: [BigInt(month)],
         chain: baseSepolia,
       })
       await publicClient.waitForTransactionReceipt({ hash: tx })
       return tx
     } finally {
-      setIsClaiming(false)
+      setIsApproving(false)
     }
   }, [vaultAddress, connectorClient, publicClient])
 
-  return { claim, isClaiming }
+  // Grace period fallback: creator claims with (n-1) votes after 7 days
+  const claimAfterGrace = useCallback(async (month) => {
+    if (!vaultAddress) return
+    setIsApproving(true)
+    try {
+      const wc = makeFixedClient(connectorClient)
+      if (!wc) throw new Error('Wallet not connected')
+
+      const tx = await wc.writeContract({
+        address: vaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'claimAfterGrace',
+        args: [BigInt(month)],
+        chain: baseSepolia,
+      })
+      await publicClient.waitForTransactionReceipt({ hash: tx })
+      return tx
+    } finally {
+      setIsApproving(false)
+    }
+  }, [vaultAddress, connectorClient, publicClient])
+
+  return { approve, claimAfterGrace, isApproving }
 }
 
 // ─── Read vault info ──────────────────────────────────────────────────────────
@@ -232,6 +254,25 @@ export function useVaultInfo(vaultAddress) {
     isLoading,
     refetch,
   }
+}
+
+// ─── Read month voting status ─────────────────────────────────────────────────
+export function useMonthStatus(vaultAddress, month, userAddress) {
+  const enabled = !!(vaultAddress && month >= 1)
+
+  const { data, refetch } = useReadContract({
+    address: vaultAddress,
+    abi: VAULT_ABI,
+    functionName: 'getMonthStatus',
+    args: [BigInt(month || 1)],
+    account: userAddress, // caller-dependent view (callerHasApproved)
+    chainId: CHAIN_ID,
+    query: { enabled, refetchInterval: 5000 },
+  })
+
+  if (!data) return { claimed: false, approvals: 0, callerHasApproved: false, graceAvailableAt: 0n, refetch }
+  const [claimed, approvals, callerHasApproved, graceAvailableAt] = data
+  return { claimed, approvals: Number(approvals), callerHasApproved, graceAvailableAt, refetch }
 }
 
 export const fmtUsdc = (bigint) =>

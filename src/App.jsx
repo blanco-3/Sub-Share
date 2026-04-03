@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
 import { useDisconnect, useChainId, useSwitchChain, useBalance, useSendTransaction } from 'wagmi'
 import { parseUnits } from 'viem'
-import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultClaim, useVaultInfo, useMyVaults, useIsAccountDeployed } from './useVault.js'
+import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultApprove, useMonthStatus, useVaultInfo, useMyVaults, useIsAccountDeployed } from './useVault.js'
 import { CHAIN_ID } from './contracts.js'
 
 // ─── i18n ───
@@ -102,9 +102,11 @@ const T = {
     remaining: "Remaining",
     schedule: "Payment schedule",
     noPayments: "First payment will be auto-charged to the vault's virtual card on the next billing date.",
-    releaseBtn: "Execute month {n} payment",
-    releasing: "Processing payment...",
-    paymentTo: "→ via Virtual Card",
+    releaseBtn: "Approve month {n} payment",
+    releasing: "Submitting vote...",
+    paymentTo: "→ Released to creator",
+    approvedLabel: "{a}/{t} members approved",
+    alreadyVoted: "✓ You voted this month",
     
     // Virtual Card
     virtualCard: "Vault Virtual Card",
@@ -223,9 +225,11 @@ const T = {
     remaining: "잔여",
     schedule: "결제 내역",
     noPayments: "첫 결제는 다음 결제일에 볼트 가상 카드로 자동 청구됩니다.",
-    releaseBtn: "{n}개월차 결제 실행",
-    releasing: "결제 처리 중...",
-    paymentTo: "→ 가상 카드 결제",
+    releaseBtn: "{n}개월차 결제 승인",
+    releasing: "투표 제출 중...",
+    paymentTo: "→ 생성자에게 지급됨",
+    approvedLabel: "{a}/{t}명 승인",
+    alreadyVoted: "✓ 이번 달 투표 완료",
     
     virtualCard: "볼트 가상 카드",
     cardDesc: "이 카드는 볼트 컨트랙트에 연결되어 있습니다. 구독료가 카드에서 직접 결제되며, 어떤 멤버도 자금을 만지지 않습니다.",
@@ -355,7 +359,8 @@ export default function App() {
   const { deploy, isDeploying: isOnChainDeploying } = useDeployVault();
   const { deposit: depositOnChain, step: depositStep }  = useVaultDeposit(vaultAddr);
   const { join: joinOnChain, isJoining }                = useVaultJoin(vaultAddr, address);
-  const { claim, isClaiming }                           = useVaultClaim(vaultAddr);
+  const { approve: approveOnChain, isApproving }         = useVaultApprove(vaultAddr);
+  const monthStatus                                      = useMonthStatus(vaultAddr, curMo, address);
   const { info: chainInfo, refetch: refetchInfo }       = useVaultInfo(vaultAddr);
 
   // read vault info from chain for JOIN preview
@@ -431,13 +436,17 @@ export default function App() {
   const doPay = async () => {
     if (!vaultAddr) return;
     setReleasing(true);
-    setTxStatus(lang === 'ko' ? '결제 클레임 중...' : 'Claiming payment...');
+    setTxStatus(lang === 'ko' ? '투표 제출 중...' : 'Submitting vote...');
     try {
-      const tx = await claim(curMo);
-      setPays(p => [...p, { mo: curMo, amt: vault.price, tx }]);
-      setCurMo(m => m + 1);
+      const tx = await approveOnChain(curMo);
       setTxStatus('');
       await refetchInfo();
+      // If payment was fully released (all n voted), advance curMo
+      const freshInfo = await refetchInfo();
+      if (freshInfo?.data && Number(freshInfo.data[7]) > pays.length) {
+        setPays(p => [...p, { mo: curMo, amt: vault.price, tx }]);
+        setCurMo(m => m + 1);
+      }
     } catch (e) {
       setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + (e.shortMessage || e.message || String(e)));
     } finally {
@@ -890,7 +899,18 @@ export default function App() {
           </Card>
         ))}
         {txStatus && <div style={{ fontSize:11, color: txStatus.includes('Error')||txStatus.includes('오류') ? C.er : C.wn, textAlign:'center', marginBottom:8, padding:'8px 12px', background: txStatus.includes('Error')||txStatus.includes('오류') ? '#EF444410':'#FBBF2410', borderRadius:8 }}>{txStatus}</div>}
-        {canPay && <Btn on={doPay} disabled={releasing||isClaiming} style={{marginTop:8}}>{releasing||isClaiming ? t.releasing : t.releaseBtn.replace("{n}",curMo)}</Btn>}
+        {canPay && (
+          <>
+            <div style={{ fontSize:11, color:C.t3, textAlign:'center', marginBottom:6 }}>
+              {monthStatus.callerHasApproved
+                ? t.alreadyVoted
+                : t.approvedLabel.replace('{a}', monthStatus.approvals).replace('{t}', vault.nMem || chainInfo?.nMembers || '?')}
+            </div>
+            <Btn on={doPay} disabled={releasing || isApproving || monthStatus.callerHasApproved || monthStatus.claimed} style={{marginTop:4}}>
+              {releasing || isApproving ? t.releasing : t.releaseBtn.replace("{n}", curMo)}
+            </Btn>
+          </>
+        )}
         {!canPay && (<>
           <Card style={{ background:C.okG, border:`1px solid ${C.ok}20`, textAlign:"center", marginTop:8, padding:22 }}>
             <div style={{ fontSize:20, marginBottom:6 }}>✓</div>
