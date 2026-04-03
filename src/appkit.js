@@ -4,6 +4,9 @@ import { base, baseSepolia, mainnet } from '@reown/appkit/networks'
 
 export const projectId =
   import.meta.env.VITE_REOWN_PROJECT_ID?.trim() || 'b9b6bd0309117a0175490cece6ffccd9'
+const appUrl =
+  import.meta.env.VITE_APP_URL?.trim() ||
+  (typeof window !== 'undefined' ? window.location.origin : 'https://sub-share.xyz')
 
 // baseSepolia first = default network for testing
 const networks = [baseSepolia, base, mainnet]
@@ -23,7 +26,7 @@ createAppKit({
   metadata: {
     name: 'Sub-Share',
     description: 'Claude reimbursement vault for hackathon teams.',
-    url: 'https://sub-share.xyz',
+    url: appUrl,
     icons: [],
   },
   features: {

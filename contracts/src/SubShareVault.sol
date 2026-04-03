@@ -76,6 +76,7 @@ contract SubShareVault {
 
     uint256 public monthsClaimed;
     mapping(uint256 => bool) public monthClaimed;
+    mapping(uint256 => bool) public monthClaimedViaProof;
     mapping(uint256 => mapping(address => bool)) public hasApproved; // month => member => voted
     mapping(uint256 => uint256) public approvalCount;                // month => total votes
     mapping(uint256 => uint256) public firstApprovalAt;              // month => first vote timestamp
@@ -132,7 +133,6 @@ contract SubShareVault {
     /// @notice Lock your share. Vault activates when all members deposit.
     function deposit() external {
         require(isMember[msg.sender], "Not a member: call join() first");
-        require(memberList.length == nMembers, "Team not full yet");
         require(!hasDeposited[msg.sender], "Already deposited");
         require(!isActive, "Vault already active");
 
@@ -207,6 +207,7 @@ contract SubShareVault {
         IReclaimVerifier(reclaimVerifier).verifyProof(proof);
 
         require(_equals(proof.claimInfo.provider, reclaimProviderId), "Invalid provider");
+        require(_proofTargetsThisVaultAndMonth(proof.claimInfo.context, month), "Proof not bound to vault/month");
 
         string memory extractedParameters = _extractJsonObject(
             proof.claimInfo.context,
@@ -217,6 +218,7 @@ contract SubShareVault {
         require(_containsExpectedAmount(extractedParameters), "Amount mismatch");
 
         usedProofs[proofId] = true;
+        monthClaimedViaProof[month] = true;
         _releasePayment(month);
         emit PaymentClaimedViaProof(month, creator);
     }
@@ -364,6 +366,76 @@ contract SubShareVault {
                     if (depth == 0) {
                         return _slice(dataBytes, start, cursor + 1);
                     }
+                }
+            }
+
+            return "";
+        }
+
+        return "";
+    }
+
+    function _proofTargetsThisVaultAndMonth(
+        string memory context,
+        uint256 month
+    ) internal view returns (bool) {
+        string memory contextAddress = _extractJsonString(context, "\"contextAddress\"");
+        string memory contextMessage = _extractJsonString(context, "\"contextMessage\"");
+
+        if (!_equals(contextAddress, _addressToString(address(this)))) {
+            return false;
+        }
+
+        return _contains(contextMessage, string.concat("month:", _uintToString(month)));
+    }
+
+    function _extractJsonString(
+        string memory data,
+        string memory key
+    ) internal pure returns (string memory) {
+        bytes memory dataBytes = bytes(data);
+        bytes memory keyBytes = bytes(key);
+        if (dataBytes.length < keyBytes.length) {
+            return "";
+        }
+
+        for (uint256 i = 0; i <= dataBytes.length - keyBytes.length; i++) {
+            if (!_matchesAt(dataBytes, keyBytes, i)) {
+                continue;
+            }
+
+            uint256 cursor = i + keyBytes.length;
+            while (cursor < dataBytes.length && _isJsonSpacer(dataBytes[cursor])) {
+                cursor++;
+            }
+            if (cursor >= dataBytes.length || dataBytes[cursor] != bytes1(0x3A)) {
+                return "";
+            }
+
+            cursor++;
+            while (cursor < dataBytes.length && _isJsonSpacer(dataBytes[cursor])) {
+                cursor++;
+            }
+            if (cursor >= dataBytes.length || dataBytes[cursor] != bytes1(0x22)) {
+                return "";
+            }
+
+            cursor++;
+            uint256 start = cursor;
+            bool escaped = false;
+
+            for (; cursor < dataBytes.length; cursor++) {
+                bytes1 char = dataBytes[cursor];
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (char == bytes1(0x5C)) {
+                    escaped = true;
+                    continue;
+                }
+                if (char == bytes1(0x22)) {
+                    return _slice(dataBytes, start, cursor);
                 }
             }
 
@@ -523,5 +595,19 @@ contract SubShareVault {
             value /= 10;
         }
         return string(buffer);
+    }
+
+    function _addressToString(address account) internal pure returns (string memory) {
+        bytes20 data = bytes20(account);
+        bytes16 alphabet = 0x30313233343536373839616263646566;
+
+        bytes memory str = new bytes(42);
+        str[0] = "0";
+        str[1] = "x";
+        for (uint256 i = 0; i < 20; i++) {
+            str[2 + i * 2] = alphabet[uint8(data[i] >> 4)];
+            str[3 + i * 2] = alphabet[uint8(data[i] & 0x0f)];
+        }
+        return string(str);
     }
 }

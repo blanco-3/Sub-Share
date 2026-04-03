@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useReadContract, usePublicClient, useConnectorClient } from 'wagmi'
-import { parseUnits, decodeEventLog, createWalletClient, custom } from 'viem'
+import { parseUnits, decodeEventLog, createWalletClient, custom, parseAbiItem } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { transformForOnchain } from '@reclaimprotocol/js-sdk'
 import {
@@ -15,6 +15,8 @@ import {
 
 const RECLAIM_PROVIDER_ID = import.meta.env.VITE_RECLAIM_PROVIDER_ID?.trim()
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
+const APPROVE_GAS_LIMIT = 120000n
+const DEPOSIT_GAS_LIMIT = 250000n
 
 // ─── Patch Reown's CAIP-2 eth_chainId bug ─────────────────────────────────────
 // Reown AppKit returns "eip155:84532" from eth_chainId instead of "0x14a34".
@@ -52,9 +54,20 @@ function normalizeProofForContract(proofLike) {
 }
 
 function getReadableError(error, fallback = 'Transaction failed') {
+  const deepCause =
+    error?.cause?.cause?.reason ||
+    error?.cause?.cause?.message ||
+    error?.cause?.cause?.cause?.reason ||
+    error?.cause?.cause?.cause?.message
+
+  const metaMessage = Array.isArray(error?.metaMessages) ? error.metaMessages.find(Boolean) : null
+
   return (
+    deepCause ||
     error?.cause?.reason ||
     error?.cause?.data?.errorName ||
+    error?.cause?.message ||
+    metaMessage ||
     error?.shortMessage ||
     error?.details ||
     error?.message ||
@@ -62,17 +75,43 @@ function getReadableError(error, fallback = 'Transaction failed') {
   )
 }
 
+function requireWalletClient(walletClient) {
+  if (!walletClient) {
+    throw new Error('Wallet session not ready. Open the wallet modal once and try again.')
+  }
+  return walletClient
+}
+
+function isAlreadyPendingTransactionError(error) {
+  const message = getReadableError(error, '').toLowerCase()
+  return (
+    message.includes('already known') ||
+    message.includes('nonce provided for the transaction is lower') ||
+    message.includes('nonce too low')
+  )
+}
+
+async function pollUntil(fn, predicate, { attempts = 10, delayMs = 2000 } = {}) {
+  for (let index = 0; index < attempts; index += 1) {
+    const value = await fn()
+    if (predicate(value)) return value
+    if (index < attempts - 1) {
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+  return null
+}
+
 // ─── Create vault via Factory ─────────────────────────────────────────────────
 export function useDeployVault() {
   const [isDeploying, setIsDeploying] = useState(false)
-  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const { data: connectorClient } = useConnectorClient()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
   const deploy = useCallback(async ({ name, monthlyPriceUSD, nMembers, duration }) => {
     setIsDeploying(true)
     try {
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
       if (!FACTORY_ADDRESS || !ADDRESS_RE.test(FACTORY_ADDRESS)) {
         throw new Error('Missing VITE_FACTORY_ADDRESS')
       }
@@ -121,35 +160,120 @@ export function useDeployVault() {
 // ─── Approve USDC + Deposit ───────────────────────────────────────────────────
 export function useVaultDeposit(vaultAddress) {
   const [step, setStep] = useState('idle') // idle | approving | depositing | done | error
-  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const { data: connectorClient } = useConnectorClient()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
-  const deposit = useCallback(async (depositAmountUsdc) => {
+  const deposit = useCallback(async (depositAmountUsdc, overrideVaultAddress) => {
     try {
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const targetVaultAddress = overrideVaultAddress || vaultAddress
+      if (!targetVaultAddress) throw new Error('Missing vault address')
 
-      setStep('approving')
-      const approveTx = await wc.writeContract({
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
+      const owner = wc.account?.address
+      if (!owner) throw new Error('Wallet session not ready. Open the wallet modal once and try again.')
+
+      const balance = await publicClient.readContract({
         address: USDC_ADDRESS,
         abi: USDC_ABI,
-        functionName: 'approve',
-        args: [vaultAddress, depositAmountUsdc],
-        chain: baseSepolia,
+        functionName: 'balanceOf',
+        args: [owner],
       })
-      await publicClient.waitForTransactionReceipt({ hash: approveTx })
+
+      if (balance < depositAmountUsdc) {
+        const needed = Number(depositAmountUsdc) / 1e6
+        const available = Number(balance) / 1e6
+        throw new Error(`Not enough USDC balance. Need ${needed.toFixed(2)} USDC, have ${available.toFixed(2)} USDC.`)
+      }
+
+      const allowance = await publicClient.readContract({
+        address: USDC_ADDRESS,
+        abi: USDC_ABI,
+        functionName: 'allowance',
+        args: [owner, targetVaultAddress],
+      })
+
+      if (allowance < depositAmountUsdc) {
+        setStep('approving')
+        await publicClient.simulateContract({
+          address: USDC_ADDRESS,
+          abi: USDC_ABI,
+          functionName: 'approve',
+          args: [targetVaultAddress, depositAmountUsdc],
+          account: owner,
+        })
+
+        try {
+          const approveTx = await wc.writeContract({
+            address: USDC_ADDRESS,
+            abi: USDC_ABI,
+            functionName: 'approve',
+            args: [targetVaultAddress, depositAmountUsdc],
+            gas: APPROVE_GAS_LIMIT,
+            chain: baseSepolia,
+          })
+          await publicClient.waitForTransactionReceipt({ hash: approveTx })
+        } catch (approveError) {
+          if (!isAlreadyPendingTransactionError(approveError)) {
+            throw approveError
+          }
+
+          const updatedAllowance = await pollUntil(
+            () => publicClient.readContract({
+              address: USDC_ADDRESS,
+              abi: USDC_ABI,
+              functionName: 'allowance',
+              args: [owner, targetVaultAddress],
+            }),
+            value => value >= depositAmountUsdc,
+          )
+
+          if (!updatedAllowance) {
+            throw new Error('A previous approval is still pending. Wait a few seconds and try again.')
+          }
+        }
+      }
 
       setStep('depositing')
-      const depositTx = await wc.writeContract({
-        address: vaultAddress,
+      await publicClient.simulateContract({
+        address: targetVaultAddress,
         abi: VAULT_ABI,
         functionName: 'deposit',
-        chain: baseSepolia,
+        account: owner,
       })
-      await publicClient.waitForTransactionReceipt({ hash: depositTx })
+
+      try {
+        const depositTx = await wc.writeContract({
+          address: targetVaultAddress,
+          abi: VAULT_ABI,
+          functionName: 'deposit',
+          gas: DEPOSIT_GAS_LIMIT,
+          chain: baseSepolia,
+        })
+        await publicClient.waitForTransactionReceipt({ hash: depositTx })
+        setStep('done')
+        return depositTx
+      } catch (depositError) {
+        if (!isAlreadyPendingTransactionError(depositError)) {
+          throw depositError
+        }
+
+        const deposited = await pollUntil(
+          () => publicClient.readContract({
+            address: targetVaultAddress,
+            abi: VAULT_ABI,
+            functionName: 'hasDeposited',
+            args: [owner],
+          }),
+          value => Boolean(value),
+        )
+
+        if (!deposited) {
+          throw new Error('A previous deposit is still pending. Wait a few seconds and refresh.')
+        }
+      }
 
       setStep('done')
-      return depositTx
+      return null
     } catch (e) {
       setStep('error')
       throw new Error(getReadableError(e, 'Deposit failed'))
@@ -178,7 +302,7 @@ export function useIsAccountDeployed(address) {
 // ─── Join vault ───────────────────────────────────────────────────────────────
 export function useVaultJoin(vaultAddress, userAddress) {
   const [isJoining, setIsJoining] = useState(false)
-  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const { data: connectorClient } = useConnectorClient()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
   const join = useCallback(async () => {
@@ -198,8 +322,7 @@ export function useVaultJoin(vaultAddress, userAddress) {
       }
 
       // 2. Simulation passed → send actual tx via patched client
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
 
       const tx = await wc.writeContract({
         address: vaultAddress,
@@ -222,15 +345,14 @@ export function useVaultJoin(vaultAddress, userAddress) {
 // ─── Approve monthly payment (any member votes; auto-releases at n-of-n) ──────
 export function useVaultApprove(vaultAddress) {
   const [isApproving, setIsApproving] = useState(false)
-  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const { data: connectorClient } = useConnectorClient()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
   const approve = useCallback(async (month) => {
     if (!vaultAddress) return
     setIsApproving(true)
     try {
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
 
       const tx = await wc.writeContract({
         address: vaultAddress,
@@ -239,8 +361,16 @@ export function useVaultApprove(vaultAddress) {
         args: [BigInt(month)],
         chain: baseSepolia,
       })
-      await publicClient.waitForTransactionReceipt({ hash: tx })
-      return tx
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: tx })
+      const released = receipt.logs.some(log => {
+        try {
+          const decoded = decodeEventLog({ abi: VAULT_ABI, ...log })
+          return decoded.eventName === 'PaymentClaimed'
+        } catch {
+          return false
+        }
+      })
+      return { txHash: tx, released }
     } catch (error) {
       throw new Error(getReadableError(error, 'Approve failed'))
     } finally {
@@ -253,8 +383,7 @@ export function useVaultApprove(vaultAddress) {
     if (!vaultAddress) return
     setIsApproving(true)
     try {
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
 
       const tx = await wc.writeContract({
         address: vaultAddress,
@@ -278,15 +407,14 @@ export function useVaultApprove(vaultAddress) {
 // ─── Claim via Reclaim ZK proof (creator fast-path) ──────────────────────────
 export function useVaultClaimWithProof(vaultAddress) {
   const [isClaiming, setIsClaiming] = useState(false)
-  const { data: connectorClient } = useConnectorClient({ chainId: CHAIN_ID })
+  const { data: connectorClient } = useConnectorClient()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
 
   const claimWithProof = useCallback(async (month, proof) => {
     if (!vaultAddress) return
     setIsClaiming(true)
     try {
-      const wc = makeFixedClient(connectorClient)
-      if (!wc) throw new Error('Wallet not connected')
+      const wc = requireWalletClient(makeFixedClient(connectorClient))
 
       const onchainProof = normalizeProofForContract(proof)
 
@@ -298,7 +426,7 @@ export function useVaultClaimWithProof(vaultAddress) {
         chain: baseSepolia,
       })
       await publicClient.waitForTransactionReceipt({ hash: tx })
-      return tx
+      return { txHash: tx, released: true }
     } catch (error) {
       throw new Error(getReadableError(error, 'Proof claim failed'))
     } finally {
@@ -344,6 +472,89 @@ export function useVaultInfo(vaultAddress) {
   }
 }
 
+// ─── Read vault members + deposit status from chain ──────────────────────────
+export function useVaultMembers(vaultAddress) {
+  const publicClient = usePublicClient({ chainId: CHAIN_ID })
+  const [members, setMembers] = useState([])
+  const [isLoading, setIsLoading] = useState(false)
+  const enabled = !!(vaultAddress && vaultAddress.match(/^0x[0-9a-fA-F]{40}$/))
+
+  const refresh = useCallback(async (overrideVaultAddress) => {
+    const targetVaultAddress = overrideVaultAddress || vaultAddress
+    const targetEnabled = !!(targetVaultAddress && targetVaultAddress.match(/^0x[0-9a-fA-F]{40}$/))
+    if (!targetEnabled || !publicClient) {
+      setMembers([])
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      const memberCountRaw = await publicClient.readContract({
+        address: targetVaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'getMemberCount',
+      })
+
+      const memberCount = Number(memberCountRaw || 0n)
+      if (memberCount === 0) {
+        setMembers([])
+        return
+      }
+
+      const memberCalls = Array.from({ length: memberCount }, (_, index) => ({
+        address: targetVaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'getMember',
+        args: [BigInt(index)],
+      }))
+
+      const memberResults = await publicClient.multicall({
+        contracts: memberCalls,
+        allowFailure: true,
+      })
+      const memberAddresses = memberResults
+        .map(result => result?.result)
+        .filter(address => typeof address === 'string' && ADDRESS_RE.test(address))
+
+      const depositCalls = memberAddresses.map(member => ({
+        address: targetVaultAddress,
+        abi: VAULT_ABI,
+        functionName: 'hasDeposited',
+        args: [member],
+      }))
+
+      const depositResults = await publicClient.multicall({
+        contracts: depositCalls,
+        allowFailure: true,
+      })
+
+      setMembers(
+        memberAddresses.map((member, index) => ({
+          addr: member,
+          joined: true,
+          dep: Boolean(depositResults[index]?.result),
+        })),
+      )
+    } catch {
+      setMembers([])
+    } finally {
+      setIsLoading(false)
+    }
+  }, [publicClient, vaultAddress])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    if (!enabled) return undefined
+    const interval = setInterval(refresh, 5000)
+    return () => clearInterval(interval)
+  }, [enabled, refresh])
+
+  return { members, isLoading, refresh }
+}
+
 // ─── Read month voting status ─────────────────────────────────────────────────
 export function useMonthStatus(vaultAddress, month, userAddress) {
   const enabled = !!(vaultAddress && month >= 1)
@@ -387,6 +598,93 @@ export function useVaultUnlockInfo(vaultAddress, month) {
     unlockedMonth: unlockedMonthRaw ? Number(unlockedMonthRaw) : 0,
     unlockTime: unlockTimeRaw ?? 0n,
   }
+}
+
+// ─── Read claim history from chain ───────────────────────────────────────────
+export function useVaultClaimHistory(vaultAddress, duration) {
+  const publicClient = usePublicClient({ chainId: CHAIN_ID })
+  const [history, setHistory] = useState([])
+  const [latestTxHash, setLatestTxHash] = useState(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const enabled = !!(vaultAddress && duration >= 1)
+
+  const refresh = useCallback(async () => {
+    if (!enabled || !publicClient) {
+      setHistory([])
+      setLatestTxHash(null)
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      const months = Array.from({ length: duration }, (_, index) => index + 1)
+      const contracts = months.flatMap(month => [
+        {
+          address: vaultAddress,
+          abi: VAULT_ABI,
+          functionName: 'monthClaimed',
+          args: [BigInt(month)],
+        },
+        {
+          address: vaultAddress,
+          abi: VAULT_ABI,
+          functionName: 'monthClaimedViaProof',
+          args: [BigInt(month)],
+        },
+      ])
+
+      const results = await publicClient.multicall({ contracts, allowFailure: false })
+
+      const paymentClaimedLogs = await publicClient.getLogs({
+        address: vaultAddress,
+        event: parseAbiItem('event PaymentClaimed(uint256 indexed month, uint256 amount, address creator)'),
+        fromBlock: 0n,
+      })
+
+      const proofLogs = await publicClient.getLogs({
+        address: vaultAddress,
+        event: parseAbiItem('event PaymentClaimedViaProof(uint256 indexed month, address indexed creator)'),
+        fromBlock: 0n,
+      })
+
+      const txHashByMonth = new Map(
+        paymentClaimedLogs.map(log => [Number(log.args.month), log.transactionHash]),
+      )
+      const latestLog = paymentClaimedLogs[paymentClaimedLogs.length - 1]
+
+      const viaProofMonths = new Set(
+        proofLogs.map(log => Number(log.args.month)),
+      )
+
+      setHistory(
+        months.map((month, index) => ({
+          month,
+          claimed: Boolean(results[index * 2]),
+          viaProof: Boolean(results[index * 2 + 1]),
+          txHash: txHashByMonth.get(month) || null,
+          viaProofEvent: viaProofMonths.has(month),
+        })),
+      )
+      setLatestTxHash(latestLog?.transactionHash || null)
+    } catch {
+      setHistory([])
+      setLatestTxHash(null)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [duration, enabled, publicClient, vaultAddress])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  useEffect(() => {
+    if (!enabled) return undefined
+    const interval = setInterval(refresh, 5000)
+    return () => clearInterval(interval)
+  }, [enabled, refresh])
+
+  return { history, latestTxHash, isLoading, refresh }
 }
 
 export const fmtUsdc = (bigint) =>

@@ -92,7 +92,7 @@ contract SubShareVaultTest is Test {
         vault.deposit();
     }
 
-    function testDepositRequiresFullTeamBeforeAnyDeposit() public {
+    function testMemberCanDepositBeforeTeamIsFull() public {
         SubShareVault partialVault = new SubShareVault(
             address(usdc),
             "Claude Pro",
@@ -106,12 +106,23 @@ contract SubShareVaultTest is Test {
 
         uint256 depositAmount = partialVault.depositPerPerson();
         usdc.mint(CREATOR, depositAmount);
+        usdc.mint(MEMBER, depositAmount);
+        vm.prank(MEMBER);
+        partialVault.join();
         vm.prank(CREATOR);
+        usdc.approve(address(partialVault), depositAmount);
+        vm.prank(MEMBER);
         usdc.approve(address(partialVault), depositAmount);
 
         vm.prank(CREATOR);
-        vm.expectRevert("Team not full yet");
         partialVault.deposit();
+
+        vm.prank(MEMBER);
+        partialVault.deposit();
+
+        assertTrue(partialVault.hasDeposited(CREATOR));
+        assertTrue(partialVault.hasDeposited(MEMBER));
+        assertFalse(partialVault.isActive());
     }
 
     function testClaimWithProofReleasesPaymentWhenReceiptMatches() public {
@@ -119,12 +130,13 @@ contract SubShareVaultTest is Test {
 
         vm.prank(CREATOR);
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "20.00"), keccak256("proof-1")),
+            _proof(PROVIDER_ID, _context(address(vault), 1, "Claude Pro", "20.00"), keccak256("proof-1")),
             1
         );
 
         assertEq(usdc.balanceOf(CREATOR), creatorBalanceBefore + MONTHLY_PRICE);
         assertTrue(vault.monthClaimed(1));
+        assertTrue(vault.monthClaimedViaProof(1));
         assertEq(vault.monthsClaimed(), 1);
         assertTrue(vault.usedProofs(keccak256("proof-1")));
     }
@@ -132,7 +144,7 @@ contract SubShareVaultTest is Test {
     function testClaimWithProofAcceptsWholeDollarAmount() public {
         vm.prank(CREATOR);
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "20"), keccak256("proof-2")),
+            _proof(PROVIDER_ID, _context(address(vault), 1, "Claude Pro", "20"), keccak256("proof-2")),
             1
         );
 
@@ -142,7 +154,7 @@ contract SubShareVaultTest is Test {
     function testClaimWithProofAcceptsStripeMinorUnitAmount() public {
         vm.prank(CREATOR);
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "2000"), keccak256("proof-2b")),
+            _proof(PROVIDER_ID, _context(address(vault), 1, "Claude Pro", "2000"), keccak256("proof-2b")),
             1
         );
 
@@ -153,7 +165,7 @@ contract SubShareVaultTest is Test {
         vm.prank(CREATOR);
         vm.expectRevert("Invalid provider");
         vault.claimWithProof(
-            _proof("other-provider", _context("Claude Pro", "20.00"), keccak256("proof-3")),
+            _proof("other-provider", _context(address(vault), 1, "Claude Pro", "20.00"), keccak256("proof-3")),
             1
         );
     }
@@ -162,7 +174,7 @@ contract SubShareVaultTest is Test {
         vm.prank(CREATOR);
         vm.expectRevert("Missing Claude plan");
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("ChatGPT Plus", "20.00"), keccak256("proof-4")),
+            _proof(PROVIDER_ID, _context(address(vault), 1, "ChatGPT Plus", "20.00"), keccak256("proof-4")),
             1
         );
     }
@@ -171,7 +183,7 @@ contract SubShareVaultTest is Test {
         vm.prank(CREATOR);
         vm.expectRevert("Amount mismatch");
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "30.00"), keccak256("proof-5")),
+            _proof(PROVIDER_ID, _context(address(vault), 1, "Claude Pro", "30.00"), keccak256("proof-5")),
             1
         );
     }
@@ -180,7 +192,7 @@ contract SubShareVaultTest is Test {
         vm.prank(CREATOR);
         vm.expectRevert("Month still timelocked");
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "20.00"), keccak256("proof-6")),
+            _proof(PROVIDER_ID, _context(address(vault), 2, "Claude Pro", "20.00"), keccak256("proof-6")),
             2
         );
     }
@@ -190,7 +202,7 @@ contract SubShareVaultTest is Test {
 
         vm.prank(CREATOR);
         vault.claimWithProof(
-            _proof(PROVIDER_ID, _context("Claude Pro", "20.00"), keccak256("proof-7")),
+            _proof(PROVIDER_ID, _context(address(vault), 2, "Claude Pro", "20.00"), keccak256("proof-7")),
             2
         );
 
@@ -222,16 +234,52 @@ contract SubShareVaultTest is Test {
     }
 
     function _context(
+        address vaultAddress,
+        uint256 month,
         string memory plan,
         string memory amount
     ) internal pure returns (string memory) {
         return string.concat(
-            "{\"contextAddress\":\"0x0\",\"contextMessage\":\"sub-share\",\"extractedParameters\":",
+            "{\"contextAddress\":\"",
+            _addressToString(vaultAddress),
+            "\",\"contextMessage\":\"month:",
+            _uintToString(month),
+            "\",\"extractedParameters\":",
             "{\"plan\":\"",
             plan,
             "\",\"amount\":\"",
             amount,
             "\"}}"
         );
+    }
+
+    function _uintToString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) return "0";
+        uint256 digits;
+        uint256 temp = value;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits--;
+            buffer[digits] = bytes1(uint8(48 + value % 10));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    function _addressToString(address account) internal pure returns (string memory) {
+        bytes20 data = bytes20(account);
+        bytes16 alphabet = 0x30313233343536373839616263646566;
+        bytes memory str = new bytes(42);
+        str[0] = "0";
+        str[1] = "x";
+        for (uint256 i = 0; i < 20; i++) {
+            str[2 + i * 2] = alphabet[uint8(data[i] >> 4)];
+            str[3 + i * 2] = alphabet[uint8(data[i] & 0x0f)];
+        }
+        return string(str);
     }
 }

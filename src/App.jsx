@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
 import { useDisconnect, useChainId, useSwitchChain, useBalance, useSendTransaction } from 'wagmi'
 import { parseUnits } from 'viem'
-import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultApprove, useVaultClaimWithProof, useMonthStatus, useVaultInfo, useMyVaults, useIsAccountDeployed, useVaultUnlockInfo } from './useVault.js'
+import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultApprove, useVaultClaimWithProof, useMonthStatus, useVaultInfo, useMyVaults, useIsAccountDeployed, useVaultUnlockInfo, useVaultMembers, useVaultClaimHistory } from './useVault.js'
 import { ReclaimProofRequest } from '@reclaimprotocol/js-sdk'
 import QRCode from 'react-qr-code'
 import { CHAIN_ID } from './contracts.js'
@@ -46,8 +46,8 @@ const T = {
     getStarted: "Start Claude Demo",
     
     // Create
-    selectService: "What did one teammate already pay for?",
-    selectServiceDesc: "This build is intentionally Claude-only. Pick the Claude plan your team will share.",
+    selectService: "Which Claude plan will your team share?",
+    selectServiceDesc: "Choose a Claude plan and we will calculate each teammate’s deposit automatically.",
     perTeam: "/mo per team",
     serviceName: "Service name",
     monthlyPrice: "Monthly price (USD)",
@@ -57,7 +57,7 @@ const T = {
     commitment: "Commitment",
     reviewTitle: "Confirm & deploy",
     reviewDesc: "Check the team size and monthly amount before deploying.",
-    monthlyCost: "Monthly subscription",
+    monthlyCost: "Monthly total",
     members: "Members",
     perPerson: "Per person / month",
     durationLabel: "Commitment",
@@ -66,6 +66,9 @@ const T = {
     howSafeDesc: "Everyone locks funds first. The person who paid can only take the fixed monthly amount, either through team approval or matching proof.",
     deployBtn: "Deploy Vault",
     deploying: "Deploying on-chain...",
+    networkLabel: "Current network",
+    networkReady: "Connected to Base Sepolia",
+    networkSwitching: "Switching network...",
     
     // Invite
     inviteTitle: "Invite your team",
@@ -91,6 +94,10 @@ const T = {
     depositDone: "✓ Deposit confirmed",
     depositProgress: "Deposits",
     awaiting: "Pending",
+    finalDepositHint: "Your deposit is the last one needed. Once it confirms, the vault becomes active.",
+    creatorDepositCta: "Lock creator share now",
+    creatorDepositDesc: "You already created the vault. You can lock your share now, then let teammates join from the invite link.",
+    viewVaultStatus: "View vault status",
     simDeposit: "[Demo] Simulate all deposits",
     vaultReady: "Vault is live!",
     goActive: "View active vault →",
@@ -108,17 +115,32 @@ const T = {
     paymentTo: "→ Sent back to the person who paid",
     approvedLabel: "{a}/{t} members approved",
     alreadyVoted: "✓ You voted this month",
-    proveAndClaim: "Claim with Stripe receipt (zkTLS)",
-    provingSubscription: "Starting receipt proof...",
+    approvalStatusTitle: "Approval status",
+    approvalStatusDesc: "This month auto-releases only after every teammate approves it.",
+    approvalAutoRelease: "Auto-release at full approval",
+    receiptStatusTitle: "Receipt status",
+    receiptStatusPending: "No Claude billing proof has been used for this month yet.",
+    receiptStatusVerified: "The creator authenticated this month with a Claude billing proof.",
+    historyViaProof: "via zkTLS proof",
+    historyViaVotes: "via team approval",
+    txHashLabel: "Tx",
+    viewOnBasescan: "View on Basescan",
+    latestPaybackTitle: "Latest payback transaction",
+    latestPaybackDesc: "This is the onchain transaction that sent the monthly payback to the creator.",
+    creatorClaimTitle: "Creator claim",
+    creatorClaimDesc: "If you paid the Claude bill, use this button to pull this month’s unlocked amount with a Claude billing proof.",
+    creatorClaimFallback: "Without proof, the vault releases automatically once everyone approves.",
+    proveAndClaim: "Claim with Claude billing proof (zkTLS)",
+    provingSubscription: "Starting billing proof...",
     submittingProofClaim: "Submitting payback claim...",
-    scanQr: "Scan with Reclaim app to prove the Stripe receipt",
+    scanQr: "Scan with Reclaim app to prove the Claude billing entry",
     proofVerified: "✓ Proof verified on-chain",
     reimbursementGuide: "What happens each month",
     reimbursementDesc: "This vault does not pay Claude directly. One teammate pays first, then the vault sends that fixed amount back from the money the team already locked.",
     reimbursementStep1: "The team deposits first",
     reimbursementStep2: "One teammate pays the Claude bill",
-    reimbursementStep3: "The vault pays them back after approval or receipt proof",
-    reimbursementHint: "The receipt proof is just a faster way to get paid back.",
+    reimbursementStep3: "The vault pays them back after approval or billing proof",
+    reimbursementHint: "The billing proof is just a faster way to get paid back.",
     unlockedNow: "Unlocked now",
     lockedUntil: "Locked until",
     claimHint: "Only the unlocked month can be claimed right now.",
@@ -133,12 +155,16 @@ const T = {
     joinDesc: "Paste the vault address or invite link your team shared.",
     vaultAddr: "Vault link or address",
     joinBtn: "Join",
+    joinLoginPrompt: "Sign in to join this vault.",
+    joinLoginCta: "Sign in to continue",
+    openVault: "Open this vault",
+    alreadyInVault: "You are already in this vault.",
     
     // Status
     statusPending: "Pending",
     statusActive: "Active",
     statusComplete: "Complete",
-    admin: "paid first",
+    admin: "creator",
     you: "You",
     mo: "mo",
     people: "people",
@@ -176,8 +202,8 @@ const T = {
     keyFeatureDesc: "팀원이 먼저 돈을 넣어두기 때문에, 먼저 결제한 사람은 정해진 월 금액만 안전하게 돌려받을 수 있습니다.",
     getStarted: "Claude 데모 시작",
     
-    selectService: "누가 먼저 결제한 서비스인가요?",
-    selectServiceDesc: "이번 빌드는 Claude 전용입니다. 팀이 같이 쓸 Claude 요금제를 고르세요.",
+    selectService: "팀이 함께 쓸 Claude 플랜은 무엇인가요?",
+    selectServiceDesc: "Claude 플랜을 고르면 각 팀원의 입금액이 자동으로 계산됩니다.",
     perTeam: "/월 (팀 기준)",
     serviceName: "서비스 이름",
     monthlyPrice: "월 요금 (USD)",
@@ -187,7 +213,7 @@ const T = {
     commitment: "계약 기간",
     reviewTitle: "확인 및 배포",
     reviewDesc: "팀 인원과 월 금액을 확인한 뒤 배포하세요.",
-    monthlyCost: "월 구독료",
+    monthlyCost: "월 총 결제액",
     members: "인원",
     perPerson: "1인당 / 월",
     durationLabel: "계약 기간",
@@ -196,6 +222,9 @@ const T = {
     howSafeDesc: "모두가 먼저 돈을 넣어두고, 먼저 결제한 사람은 정해진 월 금액만 승인이나 증명으로 가져갈 수 있습니다.",
     deployBtn: "볼트 배포",
     deploying: "온체인 배포 중...",
+    networkLabel: "현재 네트워크",
+    networkReady: "Base Sepolia 연결 완료",
+    networkSwitching: "네트워크 전환 중...",
     
     inviteTitle: "팀원 초대",
     inviteDesc: "이 링크를 공유해 팀원이 먼저 자기 몫을 넣게 하세요.",
@@ -219,6 +248,10 @@ const T = {
     depositDone: "✓ 입금 확인됨",
     depositProgress: "입금 현황",
     awaiting: "대기 중",
+    finalDepositHint: "지금 입금이 마지막입니다. 이 입금이 완료되면 볼트가 활성화됩니다.",
+    creatorDepositCta: "생성자 몫 먼저 입금하기",
+    creatorDepositDesc: "볼트는 이미 만들었습니다. 초대 링크를 공유하면서 생성자 몫도 먼저 잠글 수 있습니다.",
+    viewVaultStatus: "볼트 상태 보기",
     simDeposit: "[데모] 전원 입금 시뮬레이션",
     vaultReady: "볼트 활성화!",
     goActive: "활성 볼트 보기 →",
@@ -235,17 +268,32 @@ const T = {
     paymentTo: "→ 먼저 결제한 사람에게 지급됨",
     approvedLabel: "{a}/{t}명 승인",
     alreadyVoted: "✓ 이번 달 투표 완료",
-    proveAndClaim: "Stripe 영수증으로 청구하기 (zkTLS)",
-    provingSubscription: "영수증 증명 시작 중...",
+    approvalStatusTitle: "승인 현황",
+    approvalStatusDesc: "이번 달 정산금은 모든 팀원이 승인하면 자동으로 지급됩니다.",
+    approvalAutoRelease: "전원 승인 시 자동 지급",
+    receiptStatusTitle: "영수증 인증 현황",
+    receiptStatusPending: "이번 달에는 아직 Claude 결제 증명이 사용되지 않았습니다.",
+    receiptStatusVerified: "생성자가 이번 달 정산을 Claude 결제 증명으로 처리했습니다.",
+    historyViaProof: "zkTLS 증명 사용",
+    historyViaVotes: "팀 승인으로 지급",
+    txHashLabel: "트랜잭션",
+    viewOnBasescan: "Basescan에서 보기",
+    latestPaybackTitle: "최근 정산 트랜잭션",
+    latestPaybackDesc: "이번 달 정산금이 생성자에게 지급된 온체인 트랜잭션입니다.",
+    creatorClaimTitle: "생성자 청구",
+    creatorClaimDesc: "이번 달 Claude 결제를 했다면 이 버튼으로 Claude 결제 증명을 제출하고 정산금을 청구할 수 있습니다.",
+    creatorClaimFallback: "증명이 없으면 모든 팀원 승인 후 자동 지급됩니다.",
+    proveAndClaim: "Claude 결제 증명으로 청구하기 (zkTLS)",
+    provingSubscription: "결제 증명 시작 중...",
     submittingProofClaim: "지급 청구 제출 중...",
-    scanQr: "Reclaim 앱으로 QR 스캔 → Stripe 영수증 증명",
+    scanQr: "Reclaim 앱으로 QR 스캔 → Claude 결제 증명",
     proofVerified: "✓ 온체인 증명 검증 완료",
     reimbursementGuide: "매달 어떻게 진행되나요?",
     reimbursementDesc: "이 볼트가 Claude를 직접 결제하지는 않습니다. 한 명이 먼저 결제하면, 팀이 넣어둔 돈에서 같은 금액을 다시 돌려줍니다.",
     reimbursementStep1: "팀원 모두 먼저 입금",
     reimbursementStep2: "한 명이 Claude 요금을 결제",
-    reimbursementStep3: "팀 승인이나 영수증 증명 후 그 사람에게 돈 지급",
-    reimbursementHint: "영수증 증명은 더 빨리 돈을 돌려받는 방법입니다.",
+    reimbursementStep3: "팀 승인이나 결제 증명 후 그 사람에게 돈 지급",
+    reimbursementHint: "결제 증명은 더 빨리 돈을 돌려받는 방법입니다.",
     unlockedNow: "지금 열려 있는 월",
     lockedUntil: "열리는 시점",
     claimHint: "지금은 열려 있는 월만 청구할 수 있습니다.",
@@ -258,11 +306,15 @@ const T = {
     joinDesc: "팀원이 공유한 볼트 링크 또는 주소를 붙여넣으세요.",
     vaultAddr: "볼트 링크 또는 주소",
     joinBtn: "참여하기",
+    joinLoginPrompt: "이 볼트에 참여하려면 먼저 로그인하세요.",
+    joinLoginCta: "로그인하고 계속하기",
+    openVault: "이 볼트 열기",
+    alreadyInVault: "이미 이 볼트의 멤버입니다.",
     
     statusPending: "대기 중",
     statusActive: "활성",
     statusComplete: "완료",
-    admin: "먼저 결제함",
+    admin: "생성자",
     you: "나",
     mo: "개월",
     people: "명",
@@ -272,12 +324,18 @@ const T = {
 // Demo is intentionally Claude-first to keep the prototype focused.
 const SVCS = [
   { name: "Claude",         vendor: "Anthropic",    icon: "C",  color: "#D97706",
-    plans: [{ label: "Pro", price: 20 }, { label: "Max 5x", price: 100 }, { label: "Max 20x", price: 200 }, { label: "Team", price: 30, note: "min 5 seats" }] },
+    plans: [
+      { label: "Test", price: 1, note: "demo only" },
+      { label: "Pro", price: 22 },
+      { label: "Max 5x", price: 110 },
+      { label: "Max 20x", price: 220 },
+      { label: "Team", price: 33, note: "min 5 seats" },
+    ] },
 ];
 
 const SCR = { HOME: 0, ONBOARD: 1, CREATE: 2, INVITE: 3, DEPOSIT: 4, ACTIVE: 5, JOIN: 6, MYVAULTS: 7 };
 const fmt = (n) => `$${n.toFixed(2)}`;
-const RECLAIM_APP_ID = '0xBf6B11D81583583c09935cd879193a1a0C3c4226';
+const RECLAIM_APP_ID = import.meta.env.VITE_RECLAIM_APP_ID?.trim() || '0xC8888f260371d6AAbe5b5B39D0D3a5c5Ba61E584';
 
 const C = {
   bg: "#09090B", s1: "#111114", s2: "#18181B", s3: "#1F1F23",
@@ -302,7 +360,7 @@ export default function App() {
   const authed = status === 'connected';
 
   const chainId = useChainId();
-  const { switchChain } = useSwitchChain();
+  const { switchChain, isPending: isSwitchingChain } = useSwitchChain();
   const { data: ethBalance } = useBalance({ address: address, chainId: CHAIN_ID, query: { enabled: !!address } });
   const onRightChain = chainId === CHAIN_ID;
   const hasGas = ethBalance && ethBalance.value > 0n;
@@ -325,6 +383,7 @@ export default function App() {
 
   const [curMo, setCurMo] = useState(1);
   const [pays, setPays] = useState([]);
+  const [latestPaybackTx, setLatestPaybackTx] = useState(null);
   const [releasing, setReleasing] = useState(false);
 
   const [joinCode, setJoinCode] = useState("");
@@ -345,16 +404,21 @@ export default function App() {
   const { claimWithProof, isClaiming: isProofClaiming }  = useVaultClaimWithProof(vaultAddr);
   const monthStatus                                      = useMonthStatus(vaultAddr, curMo, address);
   const unlockInfo                                       = useVaultUnlockInfo(vaultAddr, curMo);
+  const { members: chainMembers, refresh: refreshChainMembers } = useVaultMembers(vaultAddr);
   const [reclaimUrl, setReclaimUrl]                      = useState(null);
   const [reclaimStatus, setReclaimStatus]                = useState('idle'); // idle|loading|qr|submitting|done|error
   const { info: chainInfo, refetch: refetchInfo }       = useVaultInfo(vaultAddr);
+  const { history: claimHistory, latestTxHash: latestClaimHistoryTx, refresh: refreshClaimHistory } = useVaultClaimHistory(vaultAddr, vault?.dur || chainInfo?.duration || 0);
 
   // read vault info from chain for JOIN preview
   const joinAddr = joinCode.match(/^0x[0-9a-fA-F]{40}$/) ? joinCode : null;
   const { info: joinInfo }                              = useVaultInfo(joinAddr);
+  const { members: joinMembers }                       = useVaultMembers(joinAddr);
   const { join: joinOnChainDirect, isJoining: isJoinDirect } = useVaultJoin(joinAddr, address);
   const { vaults: myVaults, isLoading: myVaultsLoading, refresh: refreshMyVaults } = useMyVaults(address);
   const accountDeployed = useIsAccountDeployed(address);
+  const needsActivation = authed && accountDeployed === false;
+  const accountChecking = authed && accountDeployed === null;
 
   // URL hash routing: /#/v/<vaultAddr>
   useEffect(() => {
@@ -375,8 +439,47 @@ export default function App() {
     setReclaimUrl(null);
   }, [curMo, vaultAddr]);
 
+  useEffect(() => {
+    setMyDep(false);
+  }, [address, vaultAddr]);
+
+  useEffect(() => {
+    if (!chainInfo || !vault) return
+    const nextMonth = Math.min(chainInfo.monthsClaimed + 1, vault.dur + 1)
+    if (nextMonth !== curMo) {
+      setCurMo(nextMonth)
+    }
+  }, [chainInfo?.monthsClaimed, vault?.dur, curMo])
+
+  useEffect(() => {
+    if (!vaultAddr || !chainInfo) return
+    refreshClaimHistory()
+  }, [chainInfo?.monthsClaimed, refreshClaimHistory, vaultAddr])
+
+  useEffect(() => {
+    const latestClaimed = claimHistory.filter(entry => entry.claimed).at(-1)
+    if (latestClaimed?.txHash) {
+      setLatestPaybackTx(latestClaimed.txHash)
+    }
+  }, [claimHistory])
+
+  useEffect(() => {
+    if (latestClaimHistoryTx) {
+      setLatestPaybackTx(latestClaimHistoryTx)
+    }
+  }, [latestClaimHistoryTx])
+
   const t = T[lang];
+  const joinLoginPrompt = t.joinLoginPrompt;
   const go = (s) => { setFade(false); setTimeout(() => { setScr(s); setFade(true); if (s === SCR.JOIN) setTxStatus(''); }, 100); };
+  const getChainLabel = (id) => {
+    if (!id) return lang === 'ko' ? '연결 안 됨' : 'Not connected'
+    if (id === CHAIN_ID) return 'Base Sepolia'
+    if (id === 8453) return 'Base'
+    if (id === 1) return 'Ethereum'
+    if (id === 11155111) return 'Sepolia'
+    return `Chain ${id}`
+  }
   const primeClaudeDemo = (nextScreen) => {
     setSelSvc(0);
     setSelPlan(0);
@@ -389,6 +492,30 @@ export default function App() {
     setCStep(0);
     go(nextScreen);
   };
+  const openVaultFromInfo = async (info, addr) => {
+    if (!info || !addr) return
+    setVaultAddr(addr)
+    setVault({
+      name: info.name,
+      price: Number(info.monthlyPrice) / 1e6,
+      perPerson: Number(info.monthlyPrice) / 1e6 / info.nMembers,
+      dep: Number(info.depositPerPerson) / 1e6,
+      nMem: info.nMembers,
+      dur: info.duration,
+      color: '#6366f1',
+      icon: '◈',
+      addr,
+    })
+    setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: info.creator?.toLowerCase() === address?.toLowerCase() }])
+    setMyDep(false)
+    setPays([])
+    setLatestPaybackTx(null)
+    setCurMo(Math.min(info.monthsClaimed + 1, info.duration + 1))
+    await refreshChainMembers()
+    if (info.isActive) go(SCR.ACTIVE)
+    else if ((joinMembers?.length || 0) >= info.nMembers) go(SCR.DEPOSIT)
+    else go(SCR.INVITE)
+  }
   const formatAppError = (error) => {
     const raw =
       error?.cause?.reason ||
@@ -446,6 +573,21 @@ export default function App() {
         ? '사용자가 트랜잭션을 취소했습니다.'
         : 'The transaction was rejected by the user.'
     }
+    if (raw.includes('exceeds max transaction gas limit')) {
+      return lang === 'ko'
+        ? '지갑이 예상 가스를 너무 크게 잡았습니다. 앱에서 gas 제한을 낮췄으니 새로고침 후 다시 시도해보세요.'
+        : 'The wallet estimated too much gas. The app now caps gas more tightly, so refresh and try deposit again.'
+    }
+    if (raw.includes('Wallet session not ready')) {
+      return lang === 'ko'
+        ? '지갑 세션이 아직 준비되지 않았습니다. 계정 모달을 한 번 열고 다시 시도하세요.'
+        : 'The wallet session is not ready yet. Open the account modal once and try again.'
+    }
+    if (raw.includes('Not enough USDC balance')) {
+      return lang === 'ko'
+        ? raw.replace('Not enough USDC balance. Need', 'USDC 잔고가 부족합니다. 필요').replace('have', '보유').replace('USDC.', 'USDC 입니다.')
+        : raw
+    }
     if (raw.includes('Month still timelocked')) {
       return lang === 'ko'
         ? '아직 이번 달 청구 시점이 열리지 않았습니다.'
@@ -460,6 +602,41 @@ export default function App() {
     const date = new Date(Number(value) * 1000)
     return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString(lang === 'ko' ? 'ko-KR' : 'en-US')
   }
+  const NetworkStatusCard = () => (
+    <div style={{
+      background: onRightChain ? '#34D39910' : '#FBBF2410',
+      border: `1px solid ${onRightChain ? C.ok+'30' : C.wn+'40'}`,
+      borderRadius: 10,
+      padding: '12px 14px',
+      marginBottom: 10
+    }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12 }}>
+        <div>
+          <div style={{ fontSize:10, color:C.t4, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:4 }}>{t.networkLabel}</div>
+          <div style={{ fontSize:13, fontWeight:700, color:onRightChain ? C.ok : C.wn }}>{getChainLabel(chainId)}</div>
+        </div>
+        {onRightChain && (
+          <div style={{ fontSize:12, color:C.ok, fontWeight:700 }}>
+            {isSwitchingChain ? t.networkSwitching : t.networkReady}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+  const liveMembers = chainMembers.length > 0
+    ? chainMembers.map((member, index) => ({
+        ...member,
+        name: member.addr?.toLowerCase() === address?.toLowerCase()
+          ? t.you
+          : `${lang === 'ko' ? '팀원' : 'Member'} ${index + 1}`,
+        creator: chainInfo?.creator?.toLowerCase() === member.addr?.toLowerCase(),
+      }))
+    : members;
+  const hasMyDeposit = chainMembers.length > 0
+    ? liveMembers.some(member =>
+        member.addr?.toLowerCase() === address?.toLowerCase() && member.dep,
+      )
+    : myDep;
 
   const doDeploy = async () => {
     setDeploying(true);
@@ -473,8 +650,9 @@ export default function App() {
       setDeployTxHash(txHash);
       setVault({ name: nm, price: pp, perPerson: pp/nMem, dep: pp*dur/nMem, nMem, dur, color: sv.color, icon: sv.icon, addr });
       setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: true }]);
-      setMyDep(false); setCurMo(1); setPays([]);
-      setTxStatus('');
+      setMyDep(false); setCurMo(1); setPays([]); setLatestPaybackTx(null);
+      setTxStatus(lang === 'ko' ? '볼트 생성 완료. 이제 초대 링크를 공유하거나 생성자 몫을 먼저 입금할 수 있습니다.' : 'Vault created. You can now share the invite link or lock the creator share.')
+      await refreshChainMembers(addr);
       go(SCR.INVITE);
     } catch (e) {
       console.error('createVault error:', e);
@@ -486,15 +664,31 @@ export default function App() {
 
   const doDeposit = async () => {
     if (!vaultAddr) return;
+    if (!onRightChain) {
+      setTxStatus(lang === 'ko' ? '오류: Base Sepolia로 전환하세요.' : 'Error: Switch to Base Sepolia.');
+      return;
+    }
+    if (ethBalance !== undefined && ethBalance.value === 0n) {
+      setTxStatus(lang === 'ko' ? '오류: 가스비가 부족합니다. Base Sepolia ETH를 충전하세요.' : 'Error: No gas. Fund the wallet with Base Sepolia ETH.');
+      return;
+    }
+    if (accountChecking) {
+      setTxStatus(lang === 'ko' ? '계정 상태를 확인 중입니다.' : 'Checking account state.');
+      return;
+    }
+    if (needsActivation && !activateDone) {
+      setTxStatus(lang === 'ko' ? '오류: 먼저 지갑을 활성화하세요.' : 'Error: Activate the wallet first.');
+      return;
+    }
     setDeping(true);
     setTxStatus(lang === 'ko' ? 'USDC 승인 중...' : 'Approving USDC...');
     try {
       const depBig = parseUnits(String(vault.dep), 6);
       await depositOnChain(depBig);
       setMyDep(true);
-      setMembers(p => p.map(m => m.addr === address ? { ...m, dep: true } : m));
       setTxStatus(lang === 'ko' ? '입금 완료. 나머지 팀원을 기다리는 중입니다.' : 'Deposit completed. Waiting for the rest of the team.');
       await refetchInfo();
+      await refreshChainMembers();
     } catch (e) {
       setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + formatAppError(e));
     } finally {
@@ -504,6 +698,26 @@ export default function App() {
 
   const simJoin = () => { setMembers(p => p.map(m => ({...m, joined:true}))); setTimeout(() => go(SCR.DEPOSIT), 400); };
   const simDep  = () => { setMembers(p => p.map(m => ({...m, dep:true, joined:true}))); setTimeout(() => go(SCR.ACTIVE), 500); };
+
+  const handleActivateWallet = async () => {
+    setActivating(true);
+    setTxStatus(lang==='ko' ? '계정 활성화 중...' : 'Activating account...');
+    try {
+      const tx = await sendTransactionAsync({
+        to: address,
+        value: 0n,
+        chainId: CHAIN_ID,
+      });
+      await new Promise(r => setTimeout(r, 3000));
+      setActivateDone(true);
+      setTxStatus(lang==='ko' ? '활성화 완료! 계속 진행하세요.' : 'Activated! Continue.');
+    } catch (e) {
+      console.error('activate error:', e);
+      setTxStatus((lang==='ko'?'활성화 오류: ':'Activate error: ') + (e.shortMessage || e.message || String(e)));
+    } finally {
+      setActivating(false);
+    }
+  };
 
   // Reclaim proof flow — APP_ID/APP_SECRET/PROVIDER_ID from env
   const doProveAndClaim = async () => {
@@ -527,8 +741,8 @@ export default function App() {
       if (!APP_SECRET || !PROVIDER_ID) throw new Error('Missing Reclaim secret or provider id');
 
       const req = await ReclaimProofRequest.init(RECLAIM_APP_ID, APP_SECRET, PROVIDER_ID);
-      // Bind proof to this vault+month to prevent cross-vault replay
-      req.addContext(vaultAddr, `SubShare vault ${vaultAddr} month ${curMo}`);
+      // Bind proof to the current vault and claim month to reduce replay with older bills.
+      req.addContext(vaultAddr, `month:${curMo}`);
 
       const url = await req.getRequestUrl();
       setReclaimUrl(url);
@@ -547,8 +761,9 @@ export default function App() {
           setReclaimUrl(null);
           setTxStatus(lang==='ko' ? '온체인 자동 청구 제출 중...' : 'Submitting on-chain auto-claim...');
           try {
-            const tx = await claimWithProof(curMo, reclaimProof);
-            setPays(p => [...p, { mo: curMo, amt: vault.price, tx }]);
+            const result = await claimWithProof(curMo, reclaimProof);
+            setPays(p => [...p, { mo: curMo, amt: vault.price, tx: result?.txHash }]);
+            setLatestPaybackTx(result?.txHash || null);
             setCurMo(m => m + 1);
             setReclaimStatus('done');
             setTxStatus(lang==='ko' ? 'zkTLS 자동 청구가 완료되었습니다.' : 'zkTLS auto-claim completed.');
@@ -576,12 +791,11 @@ export default function App() {
     setReleasing(true);
     setTxStatus(lang === 'ko' ? '승인 제출 중...' : 'Submitting approval...');
     try {
-      const tx = await approveOnChain(curMo);
+      const result = await approveOnChain(curMo);
       await refetchInfo();
-      // If payment was fully released (all n voted), advance curMo
-      const freshInfo = await refetchInfo();
-      if (freshInfo?.data && Number(freshInfo.data[7]) > pays.length) {
-        setPays(p => [...p, { mo: curMo, amt: vault.price, tx }]);
+      if (result?.released) {
+        setPays(p => [...p, { mo: curMo, amt: vault.price, tx: result.txHash }]);
+        setLatestPaybackTx(result.txHash);
         setCurMo(m => m + 1);
         setTxStatus(lang === 'ko' ? `환급 완료. ${curMo}개월차 금액이 선결제자에게 지급되었습니다.` : `Reimbursement completed. Month ${curMo} was released to the payer.`);
       } else {
@@ -591,6 +805,19 @@ export default function App() {
       setTxStatus((lang === 'ko' ? '오류: ' : 'Error: ') + formatAppError(e));
     } finally {
       setReleasing(false);
+    }
+  };
+
+  const goToVaultStatus = async () => {
+    await refreshChainMembers();
+    const freshInfo = await refetchInfo();
+    await refreshMyVaults();
+    const infoData = freshInfo?.data;
+    const isActiveNow = infoData ? Boolean(infoData[5]) : chainInfo?.isActive;
+    if (isActiveNow) {
+      go(SCR.ACTIVE);
+    } else {
+      go(SCR.MYVAULTS);
     }
   };
 
@@ -779,16 +1006,6 @@ export default function App() {
         <Steps cur={cStep} n={3} />
         {cStep===0 && (<div>
           <Title>{t.selectService}</Title><Desc>{t.selectServiceDesc}</Desc>
-          <Card style={{ background:`linear-gradient(135deg, ${C.p}08, ${C.s1})`, border:`1px solid ${C.p}20`, padding:"14px 16px" }}>
-            <div style={{ fontSize:11, color:C.p, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.5px", marginBottom:4 }}>
-              {lang==='ko' ? '추천 데모 흐름' : 'Recommended demo flow'}
-            </div>
-            <div style={{ fontSize:12, color:C.t2, lineHeight:1.6 }}>
-              {lang==='ko'
-                ? 'Claude Pro, 4인 팀, 3개월 기준으로 미리 세팅되어 있습니다. 바로 검토하거나 다른 플랜으로 바꿀 수 있습니다.'
-                : 'Preloaded for Claude Pro, a 4-person team, and a 3-month commitment. You can review it immediately or switch plans.'}
-            </div>
-          </Card>
           {SVCS.map((s,i) => {
             const isSelected = selSvc === i;
             const priceRange = s.plans.length > 1
@@ -859,6 +1076,7 @@ export default function App() {
         </div>)}
         {cStep===2 && (<div>
           <Title>{t.reviewTitle}</Title><Desc>{t.reviewDesc}</Desc>
+          <NetworkStatusCard />
           <Card style={{ background:`linear-gradient(135deg, ${C.s1}, ${(sv?.color||C.p)}05)` }}>
             <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
               <div style={{ fontSize:24, width:48, height:48, borderRadius:13, background:`${sv?.color||C.p}10`, display:"flex", alignItems:"center", justifyContent:"center", color:sv?.color||C.p }}>{sv?.icon}</div>
@@ -887,8 +1105,9 @@ export default function App() {
                 {lang==='ko' ? `현재 네트워크: ${chainId}` : `Current chain: ${chainId}`}
               </div>
               <button onClick={() => switchChain({ chainId: CHAIN_ID })}
+                disabled={isSwitchingChain}
                 style={{ fontSize:12, fontWeight:600, padding:'7px 14px', borderRadius:8, background:C.wn, color:'#000', border:'none', cursor:'pointer' }}>
-                Switch to Base Sepolia
+                {isSwitchingChain ? t.networkSwitching : 'Switch to Base Sepolia'}
               </button>
             </div>
           )}
@@ -925,9 +1144,10 @@ export default function App() {
 
   // INVITE
   if (scr === SCR.INVITE) {
-    const totalSlots = vault?.nMem || members.length;
-    const jc = members.filter(m=>m.joined).length;
+    const totalSlots = chainInfo?.nMembers || vault?.nMem || liveMembers.length;
+    const jc = liveMembers.filter(m=>m.joined).length;
     const all = jc === totalSlots;
+    const creatorNeedsDeposit = !!(address && chainInfo?.creator?.toLowerCase() === address.toLowerCase() && !hasMyDeposit);
     const link = `${window.location.origin}${window.location.pathname}#/v/${encodeURIComponent(vault.addr)}`;
     const shareText = lang==='ko' ? `Sub-Share 정산 볼트에 참여하세요: ${vault.name}` : `Join my Sub-Share reimbursement vault: ${vault.name}`;
     const copyLink = () => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
@@ -965,9 +1185,18 @@ export default function App() {
           <div style={{ padding:"11px 13px", background:C.bg, borderRadius:10, fontSize:12, color:C.ac, fontFamily:mono, wordBreak:"break-all", marginBottom:12, border:`1px solid ${C.bd}` }}>{link}</div>
           <Btn on={copyLink}>{copied?t.copied:t.copyLink}</Btn>
         </Card>
+        {creatorNeedsDeposit && (
+          <Card style={{ background:`linear-gradient(135deg, ${C.p}08, ${C.s1})`, border:`1px solid ${C.p}25` }}>
+            <div style={{ fontSize:11, color:C.p, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:6 }}>
+              {lang==='ko' ? '생성자 다음 단계' : 'Creator next step'}
+            </div>
+            <div style={{ fontSize:12, color:C.t2, lineHeight:1.6, marginBottom:12 }}>{t.creatorDepositDesc}</div>
+            <Btn on={() => go(SCR.DEPOSIT)} style={{ marginBottom:0 }}>{t.creatorDepositCta}</Btn>
+          </Card>
+        )}
         <Label>{all ? t.allJoined : t.joined.replace("{n}",jc).replace("{t}",totalSlots)}</Label>
         <div style={{ height:4, background:C.bd, borderRadius:2, marginBottom:14 }}><div style={{ height:"100%", width:`${(jc/totalSlots)*100}%`, background:C.ok, borderRadius:2, transition:"width 0.5s" }} /></div>
-        {members.map((m,i) => <MemberRow key={i} m={m} i={i} showDep={false} />)}
+        {liveMembers.map((m,i) => <MemberRow key={m.addr || i} m={m} i={i} showDep={false} />)}
         {!all ? <div style={{marginTop:12}}><div style={{textAlign:"center",color:C.t4,fontSize:12,marginBottom:10}}>{t.waiting.replace("{n}",totalSlots-jc)}</div><Btn secondary on={simJoin}>{t.simJoin}</Btn></div>
         : <Btn on={()=>go(SCR.DEPOSIT)} style={{marginTop:12}}>{t.proceed}</Btn>}
       </Wrap>
@@ -976,16 +1205,54 @@ export default function App() {
 
   // DEPOSIT
   if (scr === SCR.DEPOSIT) {
-    const dc = members.filter(m=>m.dep).length;
-    const allD = dc===members.length;
+    const dc = liveMembers.filter(m=>m.dep).length;
+    const allD = liveMembers.length > 0 && dc===liveMembers.length;
+    const willActivateVault = !hasMyDeposit && liveMembers.length > 0 && dc + 1 === liveMembers.length;
     return (
       <Wrap><Back to={SCR.HOME} /><VaultHead />
         <Title>{t.depositTitle}</Title><Desc>{t.depositDesc}</Desc>
-        {!myDep && (
+        <NetworkStatusCard />
+        {!onRightChain && (
+          <Card style={{ background:'#FBBF2415', border:'1px solid #FBBF2440', padding:'12px 14px' }}>
+            <div style={{ fontSize:12, color:C.wn, fontWeight:700, marginBottom:6 }}>
+              {lang==='ko' ? '⚠️ Base Sepolia로 전환하세요' : '⚠️ Switch to Base Sepolia'}
+            </div>
+            <Btn on={() => switchChain({ chainId: CHAIN_ID })} disabled={isSwitchingChain} style={{ marginBottom:0 }}>
+              {isSwitchingChain ? t.networkSwitching : 'Switch to Base Sepolia'}
+            </Btn>
+          </Card>
+        )}
+        {onRightChain && ethBalance !== undefined && !hasGas && (
+          <Card style={{ background:'#EF444415', border:'1px solid #EF444430', padding:'12px 14px' }}>
+            <div style={{ fontSize:12, color:C.er, fontWeight:700, marginBottom:6 }}>
+              {lang==='ko' ? '⚠️ 가스비 없음 (Base Sepolia ETH 필요)' : '⚠️ No gas (need Base Sepolia ETH)'}
+            </div>
+            <div style={{ fontSize:11, color:C.t2 }}>
+              <a href={`https://learnweb3.io/faucets/base_sepolia${address ? `?address=${address}` : ''}`} target="_blank" rel="noreferrer"
+                style={{ color:C.ac, textDecoration:'underline' }}>LearnWeb3 Faucet</a>
+            </div>
+          </Card>
+        )}
+        {needsActivation && !activateDone && (
+          <Card style={{ background:'#6366f115', border:`1px solid ${C.p}40`, padding:'12px 14px' }}>
+            <div style={{ fontSize:12, color:C.p, fontWeight:700, marginBottom:6 }}>
+              {lang==='ko' ? '⚡ 입금 전에 지갑 활성화 필요' : '⚡ Activate wallet before deposit'}
+            </div>
+            <Btn on={handleActivateWallet} disabled={activating || !hasGas} style={{ marginBottom:0 }}>
+              {activating ? (lang==='ko' ? '활성화 중...' : 'Activating...') : (lang==='ko' ? '지갑 활성화' : 'Activate Wallet')}
+            </Btn>
+          </Card>
+        )}
+        {!hasMyDeposit && (
           <Card style={{ background:`linear-gradient(135deg, ${C.p}06, ${C.s1})`, border:`1px solid ${C.p}20`, textAlign:"center", padding:24 }}>
             <div style={{ fontSize:10, color:C.t4, textTransform:"uppercase", letterSpacing:"1px", marginBottom:8 }}>{t.yourShare}</div>
             <div style={{ fontSize:32, fontWeight:800, fontFamily:font, marginBottom:4 }}>{fmt(vault.dep)}</div>
             <div style={{ fontSize:12, color:C.t3, marginBottom:20 }}>USDC</div>
+            {willActivateVault && (
+              <div style={{ fontSize:11, color:C.ac, marginBottom:12, padding:'8px 10px', background:`${C.ac}12`, borderRadius:8 }}>
+                {t.finalDepositHint}
+              </div>
+            )}
             {txStatus && (
               <div style={{
                 fontSize:11,
@@ -998,7 +1265,7 @@ export default function App() {
                 {txStatus}
               </div>
             )}
-            <Btn on={doDeposit} disabled={deping}>
+            <Btn on={doDeposit} disabled={deping || !onRightChain || !hasGas || (needsActivation && !activateDone) || accountChecking}>
               {deping
                 ? (depositStep === 'approving'
                     ? (lang==='ko' ? 'USDC 승인 중...' : 'Approving USDC...')
@@ -1007,11 +1274,16 @@ export default function App() {
             </Btn>
           </Card>
         )}
-        {myDep && <Card style={{ background:C.okG, border:`1px solid ${C.ok}20`, textAlign:"center", padding:14 }}><span style={{ color:C.ok, fontSize:13, fontWeight:600 }}>{t.depositDone}</span></Card>}
-        <Label>{t.depositProgress} ({dc}/{members.length})</Label>
-        <div style={{ height:4, background:C.bd, borderRadius:2, marginBottom:14 }}><div style={{ height:"100%", width:`${(dc/members.length)*100}%`, background:C.ok, borderRadius:2, transition:"width 0.5s" }} /></div>
-        {members.map((m,i) => <MemberRow key={i} m={m} i={i} showDep={true} />)}
-        {myDep && !allD && <Btn secondary on={simDep} style={{marginTop:12}}>{t.simDeposit}</Btn>}
+        {hasMyDeposit && <Card style={{ background:C.okG, border:`1px solid ${C.ok}20`, textAlign:"center", padding:14 }}><span style={{ color:C.ok, fontSize:13, fontWeight:600 }}>{t.depositDone}</span></Card>}
+        <Label>{t.depositProgress} ({dc}/{liveMembers.length || members.length})</Label>
+        <div style={{ height:4, background:C.bd, borderRadius:2, marginBottom:14 }}><div style={{ height:"100%", width:`${((dc/(liveMembers.length || members.length || 1))*100)}%`, background:C.ok, borderRadius:2, transition:"width 0.5s" }} /></div>
+        {liveMembers.map((m,i) => <MemberRow key={m.addr || i} m={m} i={i} showDep={true} />)}
+        {hasMyDeposit && (
+          <Btn secondary on={goToVaultStatus} style={{marginTop:12}}>
+            {t.viewVaultStatus}
+          </Btn>
+        )}
+        {hasMyDeposit && !allD && <Btn secondary on={simDep} style={{marginTop:12}}>{t.simDeposit}</Btn>}
         {allD && <Btn green on={()=>go(SCR.ACTIVE)} style={{marginTop:12}}>{t.goActive}</Btn>}
       </Wrap>
     );
@@ -1021,9 +1293,14 @@ export default function App() {
   if (scr === SCR.ACTIVE) {
     const onChainBalance = chainInfo ? Number(chainInfo.balance) / 1e6 : null;
     const onChainClaimed = chainInfo ? chainInfo.monthsClaimed : null;
-    const tp   = pays.length * vault.price;
+    const claimedMonths = claimHistory.filter(entry => entry.claimed);
+    const currentMonthMeta = claimHistory.find(entry => entry.month === curMo);
+    const latestClaim = latestPaybackTx
+      ? { txHash: latestPaybackTx }
+      : claimedMonths[claimedMonths.length - 1];
+    const tp   = (onChainClaimed !== null ? onChainClaimed : claimedMonths.length) * vault.price;
     const rem  = onChainBalance !== null ? onChainBalance : (vault.price * vault.dur - tp);
-    const prog = ((onChainClaimed !== null ? onChainClaimed : pays.length) / vault.dur) * 100;
+    const prog = ((onChainClaimed !== null ? onChainClaimed : claimedMonths.length) / vault.dur) * 100;
     const canPay   = curMo <= vault.dur;
     const isCreator = !!(chainInfo && address && chainInfo.creator?.toLowerCase() === address?.toLowerCase());
     const proofBusy = reclaimStatus === 'loading' || reclaimStatus === 'qr' || reclaimStatus === 'submitting' || isProofClaiming;
@@ -1063,11 +1340,31 @@ export default function App() {
           ))}
         </div>
         <Label>{t.schedule}</Label>
-        {pays.length===0 ? <Card style={{ textAlign:"center", padding:18 }}><span style={{ color:C.t4, fontSize:12 }}>{t.noPayments}</span></Card>
-        : pays.map((p,i) => (
-          <Card key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7, padding:"13px 15px" }}>
-            <div><div style={{ fontSize:13, fontWeight:600 }}>Month {p.mo}</div><div style={{ fontSize:10, color:C.t4, fontFamily:mono }}>{p.tx}</div></div>
-            <div style={{ textAlign:"right" }}><div style={{ fontSize:14, fontWeight:700, color:C.ok }}>{fmt(p.amt)}</div><div style={{ fontSize:10, color:C.t4 }}>{t.paymentTo}</div></div>
+        {claimedMonths.length===0 ? <Card style={{ textAlign:"center", padding:18 }}><span style={{ color:C.t4, fontSize:12 }}>{t.noPayments}</span></Card>
+        : claimedMonths.map((p) => (
+          <Card key={p.month} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7, padding:"13px 15px" }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600 }}>Month {p.month}</div>
+              <div style={{ fontSize:10, color:p.viaProof ? C.ac : C.t4 }}>
+                {p.viaProof ? t.historyViaProof : t.historyViaVotes}
+              </div>
+              {p.txHash && (
+                <div style={{ marginTop:4 }}>
+                  <div style={{ fontSize:10, color:C.t4, fontFamily:mono }}>
+                    {t.txHashLabel}: {p.txHash.slice(0,10)}...{p.txHash.slice(-8)}
+                  </div>
+                  <a
+                    href={`https://sepolia.basescan.org/tx/${p.txHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize:10, color:C.ac, textDecoration:'none', fontWeight:600 }}
+                  >
+                    {t.viewOnBasescan} ↗
+                  </a>
+                </div>
+              )}
+            </div>
+            <div style={{ textAlign:"right" }}><div style={{ fontSize:14, fontWeight:700, color:C.ok }}>{fmt(vault.price)}</div><div style={{ fontSize:10, color:C.t4 }}>{t.paymentTo}</div></div>
           </Card>
         ))}
         {txStatus && (
@@ -1083,23 +1380,72 @@ export default function App() {
             {txStatus}
           </div>
         )}
+        {latestClaim?.txHash && (
+          <Card style={{ border:`1px solid ${C.ok}30`, background:C.okG, marginBottom:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.ok, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
+              {t.latestPaybackTitle}
+            </div>
+            <div style={{ fontSize:12, color:C.t2, lineHeight:1.5, marginBottom:10 }}>
+              {t.latestPaybackDesc}
+            </div>
+            <div style={{ fontSize:11, color:C.tx, fontFamily:mono, marginBottom:6 }}>
+              {latestClaim.txHash}
+            </div>
+            <a
+              href={`https://sepolia.basescan.org/tx/${latestClaim.txHash}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontSize:11, color:C.ac, textDecoration:'none', fontWeight:700 }}
+            >
+              {t.viewOnBasescan} ↗
+            </a>
+          </Card>
+        )}
         {canPay && (
           <>
+            <Card style={{ border:`1px solid ${C.bd}`, background:C.s1, marginBottom:10 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.t4, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
+                {t.approvalStatusTitle}
+              </div>
+              <div style={{ fontSize:13, color:C.t2, lineHeight:1.5, marginBottom:10 }}>
+                {t.approvalStatusDesc}
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div style={{ fontSize:22, fontWeight:800, color:C.tx }}>
+                  {monthStatus.approvals} / {vault.nMem || chainInfo?.nMembers || '?'}
+                </div>
+                <div style={{ fontSize:11, color:C.ok, fontWeight:700 }}>
+                  {t.approvalAutoRelease}
+                </div>
+              </div>
+            </Card>
+            <Card style={{ border:`1px solid ${C.bd}`, background:C.s1, marginBottom:10 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:C.t4, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
+                {t.receiptStatusTitle}
+              </div>
+              <div style={{ fontSize:13, color: currentMonthMeta?.viaProof ? C.ok : C.t2, lineHeight:1.5 }}>
+                {currentMonthMeta?.viaProof ? t.receiptStatusVerified : t.receiptStatusPending}
+              </div>
+            </Card>
             {isCreator && (
-              <Btn
-                on={doProveAndClaim}
-                disabled={proofBusy || monthStatus.claimed || !isUnlocked}
-                style={{ marginTop:4, marginBottom:10 }}
-              >
-                {reclaimStatus === 'submitting' || isProofClaiming
-                  ? t.submittingProofClaim
-                  : reclaimStatus === 'loading' || reclaimStatus === 'qr'
-                    ? t.provingSubscription
-                    : t.proveAndClaim}
-              </Btn>
-            )}
-            {isCreator && (
-              <Card style={{ border:`1px solid ${C.p}30`, background:`${C.p}08`, marginTop:10, marginBottom:10 }}>
+              <Card style={{ border:`1px solid ${C.p}30`, background:`${C.p}08`, marginTop:4, marginBottom:10 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:C.p, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
+                  {t.creatorClaimTitle}
+                </div>
+                <div style={{ fontSize:12, color:C.t2, lineHeight:1.6, marginBottom:10 }}>
+                  {t.creatorClaimDesc}
+                </div>
+                <Btn
+                  on={doProveAndClaim}
+                  disabled={proofBusy || monthStatus.claimed || !isUnlocked}
+                  style={{ marginTop:0, marginBottom:10 }}
+                >
+                  {reclaimStatus === 'submitting' || isProofClaiming
+                    ? t.submittingProofClaim
+                    : reclaimStatus === 'loading' || reclaimStatus === 'qr'
+                      ? t.provingSubscription
+                      : t.proveAndClaim}
+                </Btn>
                 <div style={{ fontSize:11, fontWeight:700, color:C.p, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
                   ZK Proof · Reclaim Protocol
                 </div>
@@ -1120,6 +1466,9 @@ export default function App() {
                 {reclaimStatus === 'done' && (
                   <div style={{ fontSize:12, color:C.ok, textAlign:'center' }}>{t.proofVerified}</div>
                 )}
+                <div style={{ marginTop:10, fontSize:11, color:C.t4, lineHeight:1.5 }}>
+                  {t.creatorClaimFallback}
+                </div>
               </Card>
             )}
             <div style={{ fontSize:11, color:C.t3, textAlign:'center', marginBottom:6 }}>
@@ -1142,6 +1491,22 @@ export default function App() {
             <div style={{ fontSize:20, marginBottom:6 }}>✓</div>
             <div style={{ color:C.ok, fontSize:16, fontWeight:700, marginBottom:4 }}>{t.complete}</div>
             <div style={{ color:C.t2, fontSize:12, lineHeight:1.5 }}>{t.completeDesc}</div>
+            {latestClaim?.txHash && (
+              <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.ok}20` }}>
+                <div style={{ fontSize:10, color:C.t4, marginBottom:4 }}>{t.txHashLabel}</div>
+                <div style={{ fontSize:11, color:C.tx, fontFamily:mono, marginBottom:6 }}>
+                  {latestClaim.txHash.slice(0,10)}...{latestClaim.txHash.slice(-8)}
+                </div>
+                <a
+                  href={`https://sepolia.basescan.org/tx/${latestClaim.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize:11, color:C.ac, textDecoration:'none', fontWeight:700 }}
+                >
+                  {t.viewOnBasescan} ↗
+                </a>
+              </div>
+            )}
           </Card>
           <Btn secondary on={()=>go(SCR.HOME)} style={{marginTop:10}}>{t.newVault}</Btn>
         </>)}
@@ -1152,34 +1517,15 @@ export default function App() {
   // JOIN
   if (scr === SCR.JOIN) {
     const isCreatorJoining = !!(joinInfo && address && joinInfo.creator?.toLowerCase() === address.toLowerCase());
-    const isAlreadyMember = isCreatorJoining;
-    const needsActivation = authed && accountDeployed === false; // counterfactual smart account
-    const accountChecking = authed && accountDeployed === null; // still loading
-
-    const handleActivate = async () => {
-      setActivating(true);
-      setTxStatus(lang==='ko' ? '계정 활성화 중...' : 'Activating account...');
-      try {
-        // Send 0-value tx to self to trigger counterfactual account deployment
-        const tx = await sendTransactionAsync({
-          to: address,
-          value: 0n,
-          chainId: CHAIN_ID,
-        });
-        await new Promise(r => setTimeout(r, 3000)); // wait for indexing
-        setActivateDone(true);
-        setTxStatus(lang==='ko' ? '활성화 완료! 이제 Join을 눌러주세요.' : 'Activated! Now click Join.');
-      } catch (e) {
-        console.error('activate error:', e);
-        setTxStatus((lang==='ko'?'활성화 오류: ':'Activate error: ') + (e.shortMessage || e.message || String(e)));
-      } finally {
-        setActivating(false);
-      }
-    };
+    const isAlreadyMember = !!(address && joinMembers.some(member => member.addr?.toLowerCase() === address.toLowerCase()));
 
     const handleJoin = async () => {
       if (!joinAddr) return;
-      if (!authed) { setTxStatus(lang==='ko'?'오류: 먼저 로그인하세요':'Error: Please log in first'); return; }
+      if (!authed) {
+        setTxStatus(joinLoginPrompt);
+        open();
+        return;
+      }
       if (isAlreadyMember) { setTxStatus(lang==='ko'?'오류: 이 주소는 이미 볼트 멤버입니다':'Error: This address is already a member'); return; }
       if (!onRightChain) { setTxStatus(lang==='ko'?'오류: Base Sepolia 네트워크로 전환하세요':'Error: Switch to Base Sepolia'); return; }
       if (ethBalance !== undefined && ethBalance.value === 0n) {
@@ -1205,8 +1551,9 @@ export default function App() {
           });
           setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: false }]);
         }
-        setMyDep(false); setPays([]); setCurMo(1);
+        setMyDep(false); setPays([]); setLatestPaybackTx(null); setCurMo(Math.min(ji.monthsClaimed + 1, ji.duration + 1));
         setTxStatus('');
+        await refreshChainMembers();
         go(SCR.DEPOSIT);
       } catch (e) {
         // Deep-extract the real bundler error (Reown wraps it several layers deep)
@@ -1255,6 +1602,7 @@ export default function App() {
     return (
       <Wrap><Back to={SCR.HOME} />
         <Title>{t.joinTitle}</Title><Desc>{t.joinDesc}</Desc>
+        <NetworkStatusCard />
         <Label>{t.vaultAddr}</Label>
         <Input value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="0x..." style={{marginBottom:12}} />
         {joinInfo && (
@@ -1281,6 +1629,19 @@ export default function App() {
             {lang==='ko' ? '내 주소: ' : 'My address: '}{address}
           </div>
         )}
+        {!authed && joinAddr && (
+          <div style={{ background:`${C.p}12`, border:`1px solid ${C.p}35`, borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.p, fontWeight:700, marginBottom:6 }}>
+              {joinLoginPrompt}
+            </div>
+            <button
+              onClick={() => open()}
+              style={{ width:'100%', fontSize:12, fontWeight:700, padding:'8px 16px', borderRadius:8, background:C.p, color:'#fff', border:'none', cursor:'pointer' }}
+            >
+              {t.joinLoginCta}
+            </button>
+          </div>
+        )}
         {/* Counterfactual account activation required */}
         {needsActivation && !activateDone && (
           <div style={{ background:'#6366f115', border:`1px solid ${C.p}40`, borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
@@ -1292,7 +1653,7 @@ export default function App() {
                 ? '새 Reown 임베디드 지갑은 첫 트랜잭션 전에 온체인 활성화가 필요해요. 아래 버튼을 누르면 자동으로 처리돼요.'
                 : 'New Reown embedded wallets need on-chain activation before the first tx. Tap below to activate.'}
             </div>
-            <button onClick={handleActivate} disabled={activating || !hasGas}
+            <button onClick={handleActivateWallet} disabled={activating || !hasGas}
               style={{ fontSize:12, fontWeight:700, padding:'8px 16px', borderRadius:8,
                 background: activating ? C.s2 : C.p, color: activating ? C.t3 : '#fff',
                 border:'none', cursor: activating ? 'not-allowed' : 'pointer', width:'100%' }}>
@@ -1306,13 +1667,35 @@ export default function App() {
         {isCreatorJoining && (
           <div style={{ background:'#EF444415', border:'1px solid #EF444430', borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
             <div style={{ fontSize:12, color:C.er, fontWeight:700, marginBottom:4 }}>
-              {lang==='ko' ? '⚠️ 이 볼트의 선결제자입니다' : '⚠️ You are this vault’s payer'}
+              {lang==='ko' ? '⚠️ 이 볼트의 생성자입니다' : '⚠️ You created this vault'}
             </div>
             <div style={{ fontSize:11, color:C.t2 }}>
               {lang==='ko'
-                ? '선결제자는 이미 멤버입니다. 다른 계정으로 로그인해 팀원으로 참여하세요.'
-                : 'The payer is already a member. Log in with a different account to join as a teammate.'}
+                ? '생성자도 같은 입금 흐름을 사용합니다. 이 볼트를 열어서 다음 단계로 이동하세요.'
+                : 'The creator follows the same deposit flow as everyone else. Open the vault to continue.'}
             </div>
+            <button
+              onClick={() => openVaultFromInfo(joinInfo, joinAddr)}
+              style={{ marginTop:10, width:'100%', fontSize:12, fontWeight:700, padding:'8px 16px', borderRadius:8, background:C.p, color:'#fff', border:'none', cursor:'pointer' }}
+            >
+              {t.openVault}
+            </button>
+          </div>
+        )}
+        {!isCreatorJoining && isAlreadyMember && (
+          <div style={{ background:'#10B98110', border:`1px solid ${C.ok}30`, borderRadius:10, padding:'12px 14px', marginBottom:10 }}>
+            <div style={{ fontSize:12, color:C.ok, fontWeight:700, marginBottom:4 }}>
+              {lang==='ko' ? '✅ 이미 이 볼트의 멤버입니다' : '✅ You are already in this vault'}
+            </div>
+            <div style={{ fontSize:11, color:C.t2 }}>
+              {t.alreadyInVault}
+            </div>
+            <button
+              onClick={() => openVaultFromInfo(joinInfo, joinAddr)}
+              style={{ marginTop:10, width:'100%', fontSize:12, fontWeight:700, padding:'8px 16px', borderRadius:8, background:C.ok, color:'#08130f', border:'none', cursor:'pointer' }}
+            >
+              {t.openVault}
+            </button>
           </div>
         )}
         {/* Chain check for join */}
@@ -1322,8 +1705,9 @@ export default function App() {
               {lang==='ko' ? '⚠️ Base Sepolia로 네트워크 전환 필요' : '⚠️ Switch to Base Sepolia'}
             </div>
             <button onClick={() => switchChain({ chainId: CHAIN_ID })}
+              disabled={isSwitchingChain}
               style={{ fontSize:12, fontWeight:600, padding:'7px 14px', borderRadius:8, background:C.wn, color:'#000', border:'none', cursor:'pointer' }}>
-              Switch to Base Sepolia
+              {isSwitchingChain ? t.networkSwitching : 'Switch to Base Sepolia'}
             </button>
           </div>
         )}
@@ -1359,7 +1743,7 @@ export default function App() {
         color: '#6366f1', icon: '◈', addr: v.addr,
       });
       setMembers([{ addr: address, name: t.you, dep: false, joined: true, creator: v.isCreator }]);
-      setMyDep(false); setPays([]); setCurMo(1);
+      setMyDep(false); setPays([]); setLatestPaybackTx(null); setCurMo(Math.min(v.monthsClaimed + 1, v.duration + 1));
       if (v.isActive) go(SCR.ACTIVE);
       else if (v.isCreator) go(SCR.INVITE);
       else go(SCR.DEPOSIT);
