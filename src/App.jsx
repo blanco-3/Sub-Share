@@ -469,6 +469,26 @@ export default function App() {
     }
   }, [latestClaimHistoryTx])
 
+  useEffect(() => {
+    if (scr !== SCR.ACTIVE || !vaultAddr || !chainInfo?.monthsClaimed || latestPaybackTx) {
+      return undefined
+    }
+
+    let cancelled = false
+    const syncLatestTx = async () => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await refreshClaimHistory()
+        if (cancelled || latestClaimHistoryTx) return
+        await new Promise(resolve => setTimeout(resolve, 1500))
+      }
+    }
+
+    syncLatestTx()
+    return () => {
+      cancelled = true
+    }
+  }, [scr, vaultAddr, chainInfo?.monthsClaimed, latestPaybackTx, latestClaimHistoryTx, refreshClaimHistory])
+
   const t = T[lang];
   const joinLoginPrompt = t.joinLoginPrompt;
   const go = (s) => { setFade(false); setTimeout(() => { setScr(s); setFade(true); if (s === SCR.JOIN) setTxStatus(''); }, 100); };
