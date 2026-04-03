@@ -60,6 +60,19 @@
   },
   {
     "type": "function",
+    "name": "MONTH_DURATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "activatedAt",
     "inputs": [],
     "outputs": [
@@ -277,6 +290,19 @@
   },
   {
     "type": "function",
+    "name": "getCurrentUnlockedMonth",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getInfo",
     "inputs": [],
     "outputs": [
@@ -393,6 +419,25 @@
       },
       {
         "name": "graceAvailableAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getMonthUnlockTime",
+    "inputs": [
+      {
+        "name": "month",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }

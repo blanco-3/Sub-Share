@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
 import { useDisconnect, useChainId, useSwitchChain, useBalance, useSendTransaction } from 'wagmi'
 import { parseUnits } from 'viem'
-import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultApprove, useVaultClaimWithProof, useMonthStatus, useVaultInfo, useMyVaults, useIsAccountDeployed } from './useVault.js'
+import { useDeployVault, useVaultDeposit, useVaultJoin, useVaultApprove, useVaultClaimWithProof, useMonthStatus, useVaultInfo, useMyVaults, useIsAccountDeployed, useVaultUnlockInfo } from './useVault.js'
 import { ReclaimProofRequest } from '@reclaimprotocol/js-sdk'
 import QRCode from 'react-qr-code'
 import { CHAIN_ID } from './contracts.js'
@@ -47,9 +47,8 @@ const T = {
     
     // Create
     selectService: "What did one teammate already pay for?",
-    selectServiceDesc: "Claude is preselected for this demo. You can switch plans or enter a custom amount if needed.",
+    selectServiceDesc: "This build is intentionally Claude-only. Pick the Claude plan your team will share.",
     perTeam: "/mo per team",
-    customAmount: "Enter details manually",
     serviceName: "Service name",
     monthlyPrice: "Monthly price (USD)",
     configVault: "Team setup",
@@ -120,6 +119,9 @@ const T = {
     reimbursementStep2: "One teammate pays the Claude bill",
     reimbursementStep3: "The vault pays them back after approval or receipt proof",
     reimbursementHint: "The receipt proof is just a faster way to get paid back.",
+    unlockedNow: "Unlocked now",
+    lockedUntil: "Locked until",
+    claimHint: "Only the unlocked month can be claimed right now.",
     
     // Complete
     complete: "Vault schedule complete",
@@ -175,9 +177,8 @@ const T = {
     getStarted: "Claude 데모 시작",
     
     selectService: "누가 먼저 결제한 서비스인가요?",
-    selectServiceDesc: "이 데모는 Claude 중심입니다. 필요하면 다른 플랜이나 직접 입력도 가능합니다.",
+    selectServiceDesc: "이번 빌드는 Claude 전용입니다. 팀이 같이 쓸 Claude 요금제를 고르세요.",
     perTeam: "/월 (팀 기준)",
-    customAmount: "직접 입력하기",
     serviceName: "서비스 이름",
     monthlyPrice: "월 요금 (USD)",
     configVault: "팀 설정",
@@ -245,6 +246,9 @@ const T = {
     reimbursementStep2: "한 명이 Claude 요금을 결제",
     reimbursementStep3: "팀 승인이나 영수증 증명 후 그 사람에게 돈 지급",
     reimbursementHint: "영수증 증명은 더 빨리 돈을 돌려받는 방법입니다.",
+    unlockedNow: "지금 열려 있는 월",
+    lockedUntil: "열리는 시점",
+    claimHint: "지금은 열려 있는 월만 청구할 수 있습니다.",
     
     complete: "볼트 일정 완료",
     completeDesc: "예정된 월별 정산이 모두 끝났습니다.",
@@ -269,8 +273,6 @@ const T = {
 const SVCS = [
   { name: "Claude",         vendor: "Anthropic",    icon: "C",  color: "#D97706",
     plans: [{ label: "Pro", price: 20 }, { label: "Max 5x", price: 100 }, { label: "Max 20x", price: 200 }, { label: "Team", price: 30, note: "min 5 seats" }] },
-  { name: "Custom",         vendor: "",             icon: "+",  color: "#8B5CF6",
-    plans: [] },
 ];
 
 const SCR = { HOME: 0, ONBOARD: 1, CREATE: 2, INVITE: 3, DEPOSIT: 4, ACTIVE: 5, JOIN: 6, MYVAULTS: 7 };
@@ -342,6 +344,7 @@ export default function App() {
   const { approve: approveOnChain, isApproving }         = useVaultApprove(vaultAddr);
   const { claimWithProof, isClaiming: isProofClaiming }  = useVaultClaimWithProof(vaultAddr);
   const monthStatus                                      = useMonthStatus(vaultAddr, curMo, address);
+  const unlockInfo                                       = useVaultUnlockInfo(vaultAddr, curMo);
   const [reclaimUrl, setReclaimUrl]                      = useState(null);
   const [reclaimStatus, setReclaimStatus]                = useState('idle'); // idle|loading|qr|submitting|done|error
   const { info: chainInfo, refetch: refetchInfo }       = useVaultInfo(vaultAddr);
@@ -443,17 +446,27 @@ export default function App() {
         ? '사용자가 트랜잭션을 취소했습니다.'
         : 'The transaction was rejected by the user.'
     }
+    if (raw.includes('Month still timelocked')) {
+      return lang === 'ko'
+        ? '아직 이번 달 청구 시점이 열리지 않았습니다.'
+        : 'This month is still locked. It cannot be claimed yet.'
+    }
 
     return raw
   };
+
+  const formatUnlockTime = (value) => {
+    if (!value || value === 0n) return '-'
+    const date = new Date(Number(value) * 1000)
+    return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString(lang === 'ko' ? 'ko-KR' : 'en-US')
+  }
 
   const doDeploy = async () => {
     setDeploying(true);
     setTxStatus(lang === 'ko' ? '컨트랙트 배포 중...' : 'Deploying contract...');
     const sv = SVCS[selSvc];
-    const isCustomSvc = sv.plans.length === 0;
-    const nm = isCustomSvc ? cName : `${sv.name} ${sv.plans[selPlan].label}`;
-    const pp = isCustomSvc ? parseFloat(cPrice) : sv.plans[selPlan].price;
+    const nm = `${sv.name} ${sv.plans[selPlan].label}`;
+    const pp = sv.plans[selPlan].price;
     try {
       const { vault: addr, txHash } = await deploy({ name: nm, monthlyPriceUSD: pp, nMembers: nMem, duration: dur });
       setVaultAddr(addr);
@@ -754,8 +767,7 @@ export default function App() {
   // CREATE
   if (scr === SCR.CREATE) {
     const sv = selSvc !== null ? SVCS[selSvc] : null;
-    const isCustomSvc = sv?.plans.length === 0;
-    const pp = isCustomSvc ? (parseFloat(cPrice)||0) : (selPlan !== null ? sv.plans[selPlan].price : 0);
+    const pp = selPlan !== null ? sv.plans[selPlan].price : 0;
     const perPersonMonthly = nMem > 0 ? pp / nMem : 0;
     const depPerPerson = nMem > 0 ? pp * dur / nMem : 0;
     return (
@@ -779,10 +791,9 @@ export default function App() {
           </Card>
           {SVCS.map((s,i) => {
             const isSelected = selSvc === i;
-            const isCustom = s.plans.length === 0;
             const priceRange = s.plans.length > 1
               ? `${fmt(s.plans[0].price)} – ${fmt(s.plans[s.plans.length-1].price)}/mo`
-              : s.plans.length === 1 ? `${fmt(s.plans[0].price)}/mo` : t.customAmount;
+              : `${fmt(s.plans[0].price)}/mo`;
             return (
               <div key={i}>
                 <button onClick={() => {
@@ -814,13 +825,6 @@ export default function App() {
                         {p.note && <div style={{ fontSize:10, color:C.t4, marginTop:2 }}>{p.note}</div>}
                       </button>
                     ))}
-                  </div>
-                )}
-                {isSelected && isCustom && (
-                  <div style={{ border:`1px solid ${s.color}50`, borderTop:"none", borderRadius:"0 0 14px 14px", padding:14, background:C.s2, marginBottom:9 }}>
-                    <Label>{t.serviceName}</Label><Input value={cName} onChange={e=>setCName(e.target.value)} placeholder="e.g. Linear" style={{marginBottom:10}} />
-                    <Label>{t.monthlyPrice}</Label><Input value={cPrice} onChange={e=>setCPrice(e.target.value.replace(/[^0-9.]/g,""))} placeholder="0.00" inputMode="decimal" />
-                    {cName&&cPrice && <Btn on={()=>setCStep(1)} style={{marginTop:12}}>{t.next}</Btn>}
                   </div>
                 )}
               </div>
@@ -859,8 +863,8 @@ export default function App() {
             <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
               <div style={{ fontSize:24, width:48, height:48, borderRadius:13, background:`${sv?.color||C.p}10`, display:"flex", alignItems:"center", justifyContent:"center", color:sv?.color||C.p }}>{sv?.icon}</div>
               <div>
-                <div style={{ fontSize:16, fontWeight:700 }}>{isCustomSvc ? cName : `${sv?.name} ${sv?.plans[selPlan]?.label || ''}`}</div>
-                <div style={{ fontSize:12, color:C.t4 }}>{sv?.vendor || 'Custom'} · Reimbursement Vault</div>
+                <div style={{ fontSize:16, fontWeight:700 }}>{`${sv?.name} ${sv?.plans[selPlan]?.label || ''}`}</div>
+                <div style={{ fontSize:12, color:C.t4 }}>{sv?.vendor} · Claude team sharing</div>
               </div>
             </div>
             {[[t.monthlyCost,fmt(pp)],[t.members,`${nMem} ${t.people}`],[t.perPerson,fmt(perPersonMonthly)],[t.durationLabel,`${dur}${t.mo}`],[t.depositRequired,fmt(depPerPerson)]].map(([l,v],i) => (
@@ -1023,6 +1027,7 @@ export default function App() {
     const canPay   = curMo <= vault.dur;
     const isCreator = !!(chainInfo && address && chainInfo.creator?.toLowerCase() === address?.toLowerCase());
     const proofBusy = reclaimStatus === 'loading' || reclaimStatus === 'qr' || reclaimStatus === 'submitting' || isProofClaiming;
+    const isUnlocked = unlockInfo.unlockedMonth >= curMo;
     const txIsError = txStatus.includes('Error') || txStatus.includes('오류') || txStatus.includes('실패');
     const txIsSuccess = txStatus.includes('completed') || txStatus.includes('완료');
     return (
@@ -1034,6 +1039,21 @@ export default function App() {
           <div style={{ height:6, background:C.bd, borderRadius:3 }}><div style={{ height:"100%", width:`${prog}%`, background:`linear-gradient(90deg, ${vault.color}, ${C.p})`, borderRadius:3, transition:"width 0.5s" }} /></div>
         </Card>
         <ReimbursementGuideUI />
+        <Card style={{ background:`linear-gradient(135deg, ${C.p}08, ${C.s1})`, border:`1px solid ${C.p}20`, padding:'16px 18px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', gap:12, marginBottom:8 }}>
+            <div>
+              <div style={{ fontSize:10, color:C.t4, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:3 }}>{t.unlockedNow}</div>
+              <div style={{ fontSize:18, fontWeight:800, color:isUnlocked ? C.ok : C.wn }}>
+                {unlockInfo.unlockedMonth > 0 ? `${Math.min(unlockInfo.unlockedMonth, vault.dur)} / ${vault.dur}` : `0 / ${vault.dur}`}
+              </div>
+            </div>
+            <div style={{ textAlign:'right' }}>
+              <div style={{ fontSize:10, color:C.t4, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:3 }}>{t.lockedUntil}</div>
+              <div style={{ fontSize:12, color:C.t2 }}>{formatUnlockTime(unlockInfo.unlockTime)}</div>
+            </div>
+          </div>
+          <div style={{ fontSize:12, color:C.t2, lineHeight:1.5 }}>{t.claimHint}</div>
+        </Card>
         <div style={{ display:"flex", gap:9, marginBottom:14 }}>
           {[[t.collected, fmt(vault.dep*vault.nMem), C.ok],[t.paid, fmt(tp), C.wn]].map(([l,v,c],i) => (
             <Card key={i} style={{ flex:1, textAlign:"center", marginBottom:0, padding:13 }}>
@@ -1065,34 +1085,19 @@ export default function App() {
         )}
         {canPay && (
           <>
-            <div style={{ fontSize:11, color:C.t3, textAlign:'center', marginBottom:6 }}>
-              {monthStatus.callerHasApproved
-                ? t.alreadyVoted
-                : t.approvedLabel.replace('{a}', monthStatus.approvals).replace('{t}', vault.nMem || chainInfo?.nMembers || '?')}
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns: isCreator ? '1fr 1fr' : '1fr', gap:8, marginTop:4 }}>
-              {isCreator && (
-                <Btn
-                  on={doProveAndClaim}
-                  disabled={proofBusy || monthStatus.claimed}
-                  secondary
-                  style={{ marginBottom:0 }}
-                >
-                  {reclaimStatus === 'submitting' || isProofClaiming
-                    ? t.submittingProofClaim
-                    : reclaimStatus === 'loading' || reclaimStatus === 'qr'
-                      ? t.provingSubscription
-                      : t.proveAndClaim}
-                </Btn>
-              )}
+            {isCreator && (
               <Btn
-                on={doPay}
-                disabled={releasing || isApproving || monthStatus.callerHasApproved || monthStatus.claimed}
-                style={{ marginTop:0, marginBottom:0 }}
+                on={doProveAndClaim}
+                disabled={proofBusy || monthStatus.claimed || !isUnlocked}
+                style={{ marginTop:4, marginBottom:10 }}
               >
-                {releasing || isApproving ? t.releasing : t.releaseBtn.replace("{n}", curMo)}
+                {reclaimStatus === 'submitting' || isProofClaiming
+                  ? t.submittingProofClaim
+                  : reclaimStatus === 'loading' || reclaimStatus === 'qr'
+                    ? t.provingSubscription
+                    : t.proveAndClaim}
               </Btn>
-            </div>
+            )}
             {isCreator && (
               <Card style={{ border:`1px solid ${C.p}30`, background:`${C.p}08`, marginTop:10, marginBottom:10 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:C.p, textTransform:'uppercase', letterSpacing:'0.8px', marginBottom:8 }}>
@@ -1117,6 +1122,19 @@ export default function App() {
                 )}
               </Card>
             )}
+            <div style={{ fontSize:11, color:C.t3, textAlign:'center', marginBottom:6 }}>
+              {monthStatus.callerHasApproved
+                ? t.alreadyVoted
+                : t.approvedLabel.replace('{a}', monthStatus.approvals).replace('{t}', vault.nMem || chainInfo?.nMembers || '?')}
+            </div>
+            <Btn
+              on={doPay}
+              disabled={releasing || isApproving || monthStatus.callerHasApproved || monthStatus.claimed || !isUnlocked}
+              secondary
+              style={{ marginTop:0, marginBottom:0 }}
+            >
+              {releasing || isApproving ? t.releasing : t.releaseBtn.replace("{n}", curMo)}
+            </Btn>
           </>
         )}
         {!canPay && (<>

@@ -61,6 +61,7 @@ contract SubShareVault {
     uint256 public immutable depositPerPerson; // ceil(monthlyPrice * duration / nMembers)
 
     uint256 public constant APPROVAL_GRACE = 7 days;
+    uint256 public constant MONTH_DURATION = 30 days;
 
     address public reclaimVerifier;
     string public reclaimProviderId;
@@ -131,6 +132,7 @@ contract SubShareVault {
     /// @notice Lock your share. Vault activates when all members deposit.
     function deposit() external {
         require(isMember[msg.sender], "Not a member: call join() first");
+        require(memberList.length == nMembers, "Team not full yet");
         require(!hasDeposited[msg.sender], "Already deposited");
         require(!isActive, "Vault already active");
 
@@ -155,6 +157,7 @@ contract SubShareVault {
         require(isMember[msg.sender], "Not a member");
         require(isActive, "Vault not active");
         require(month >= 1 && month <= duration, "Month out of range");
+        require(month <= getCurrentUnlockedMonth(), "Month still timelocked");
         require(!monthClaimed[month], "Already claimed");
         require(!hasApproved[month][msg.sender], "Already voted this month");
 
@@ -178,6 +181,7 @@ contract SubShareVault {
         require(msg.sender == creator, "Only creator");
         require(isActive, "Vault not active");
         require(month >= 1 && month <= duration, "Month out of range");
+        require(month <= getCurrentUnlockedMonth(), "Month still timelocked");
         require(!monthClaimed[month], "Already claimed");
         require(approvalCount[month] >= nMembers - 1, "Need at least n-1 approvals");
         require(firstApprovalAt[month] > 0, "No approvals yet");
@@ -194,6 +198,7 @@ contract SubShareVault {
         require(msg.sender == creator, "Only creator");
         require(isActive, "Vault not active");
         require(month >= 1 && month <= duration, "Month out of range");
+        require(month <= getCurrentUnlockedMonth(), "Month still timelocked");
         require(!monthClaimed[month], "Already claimed");
 
         bytes32 proofId = proof.signedClaim.claim.identifier;
@@ -234,6 +239,26 @@ contract SubShareVault {
 
     function getMember(uint256 index) external view returns (address) {
         return memberList[index];
+    }
+
+    function getCurrentUnlockedMonth() public view returns (uint256) {
+        if (!isActive) {
+            return 0;
+        }
+
+        uint256 unlocked = ((block.timestamp - activatedAt) / MONTH_DURATION) + 1;
+        if (unlocked > duration) {
+            return duration;
+        }
+        return unlocked;
+    }
+
+    function getMonthUnlockTime(uint256 month) external view returns (uint256) {
+        require(month >= 1 && month <= duration, "Month out of range");
+        if (!isActive) {
+            return 0;
+        }
+        return activatedAt + ((month - 1) * MONTH_DURATION);
     }
 
     function getMonthStatus(

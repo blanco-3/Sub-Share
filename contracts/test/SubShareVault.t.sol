@@ -92,6 +92,28 @@ contract SubShareVaultTest is Test {
         vault.deposit();
     }
 
+    function testDepositRequiresFullTeamBeforeAnyDeposit() public {
+        SubShareVault partialVault = new SubShareVault(
+            address(usdc),
+            "Claude Pro",
+            MONTHLY_PRICE,
+            3,
+            DURATION,
+            CREATOR,
+            address(verifier),
+            PROVIDER_ID
+        );
+
+        uint256 depositAmount = partialVault.depositPerPerson();
+        usdc.mint(CREATOR, depositAmount);
+        vm.prank(CREATOR);
+        usdc.approve(address(partialVault), depositAmount);
+
+        vm.prank(CREATOR);
+        vm.expectRevert("Team not full yet");
+        partialVault.deposit();
+    }
+
     function testClaimWithProofReleasesPaymentWhenReceiptMatches() public {
         uint256 creatorBalanceBefore = usdc.balanceOf(CREATOR);
 
@@ -142,6 +164,27 @@ contract SubShareVaultTest is Test {
             _proof(PROVIDER_ID, _context("Claude Pro", "30.00"), keccak256("proof-5")),
             1
         );
+    }
+
+    function testClaimWithProofRejectsLockedFutureMonth() public {
+        vm.prank(CREATOR);
+        vm.expectRevert("Month still timelocked");
+        vault.claimWithProof(
+            _proof(PROVIDER_ID, _context("Claude Pro", "20.00"), keccak256("proof-6")),
+            2
+        );
+    }
+
+    function testFutureMonthUnlocksAfterThirtyDays() public {
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(CREATOR);
+        vault.claimWithProof(
+            _proof(PROVIDER_ID, _context("Claude Pro", "20.00"), keccak256("proof-7")),
+            2
+        );
+
+        assertTrue(vault.monthClaimed(2));
     }
 
     function _proof(

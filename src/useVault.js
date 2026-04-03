@@ -363,6 +363,32 @@ export function useMonthStatus(vaultAddress, month, userAddress) {
   return { claimed, approvals: Number(approvals), callerHasApproved, graceAvailableAt, refetch }
 }
 
+export function useVaultUnlockInfo(vaultAddress, month) {
+  const enabled = !!(vaultAddress && month >= 1)
+
+  const { data: unlockedMonthRaw } = useReadContract({
+    address: vaultAddress,
+    abi: VAULT_ABI,
+    functionName: 'getCurrentUnlockedMonth',
+    chainId: CHAIN_ID,
+    query: { enabled, refetchInterval: 5000 },
+  })
+
+  const { data: unlockTimeRaw } = useReadContract({
+    address: vaultAddress,
+    abi: VAULT_ABI,
+    functionName: 'getMonthUnlockTime',
+    args: [BigInt(month || 1)],
+    chainId: CHAIN_ID,
+    query: { enabled, refetchInterval: 5000 },
+  })
+
+  return {
+    unlockedMonth: unlockedMonthRaw ? Number(unlockedMonthRaw) : 0,
+    unlockTime: unlockTimeRaw ?? 0n,
+  }
+}
+
 export const fmtUsdc = (bigint) =>
   bigint !== undefined ? `$${(Number(bigint) / 1e6).toFixed(2)}` : '$0.00'
 
