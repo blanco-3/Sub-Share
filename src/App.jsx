@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { useAppKit, useAppKitAccount } from '@reown/appkit/react'
+import { useDisconnect } from 'wagmi'
 
 // ─── i18n ───
 const T = {
@@ -9,7 +11,7 @@ const T = {
     
     // Auth
     loginTitle: "Get Started",
-    loginDesc: "No wallet needed. Sign in how you prefer.",
+    loginDesc: "No wallet needed.",
     socialGoogle: "Continue with Google",
     socialDiscord: "Continue with Discord",
     socialGithub: "Continue with GitHub",
@@ -57,9 +59,9 @@ const T = {
     durationLabel: "Commitment",
     depositRequired: "Deposit per person",
     howSafe: "How your money stays safe",
-    howSafeDesc: "Funds are held in an audited smart contract on Base. A shared virtual card is issued to the vault — subscription payments go directly from contract to service provider. No team member ever has access to withdraw funds. Early exit requires group vote.",
+    howSafeDesc: "Funds are held in an audited on-chain smart contract. A shared virtual card is issued to the vault — subscription payments go directly from contract to service provider. No team member ever has access to withdraw funds. Early exit requires group vote.",
     deployBtn: "Deploy Vault",
-    deploying: "Deploying to Base...",
+    deploying: "Deploying on-chain...",
     
     // Invite
     inviteTitle: "Invite your team",
@@ -136,7 +138,7 @@ const T = {
     taglineSub: "프로젝트 팀과 고가 AI 도구를 안전하게 공동 결제하세요. 스마트 컨트랙트가 돈을 관리합니다.",
     
     loginTitle: "시작하기",
-    loginDesc: "지갑이 없어도 괜찮아요. 편한 방법으로 로그인하세요.",
+    loginDesc: "지갑 없이 로그인 가능.",
     socialGoogle: "Google로 계속하기",
     socialDiscord: "Discord로 계속하기",
     socialGithub: "GitHub로 계속하기",
@@ -181,9 +183,9 @@ const T = {
     durationLabel: "계약 기간",
     depositRequired: "1인당 선입금",
     howSafe: "자금이 안전한 이유",
-    howSafeDesc: "자금은 Base 네트워크의 감사받은 스마트 컨트랙트에 보관됩니다. 볼트 전용 가상 카드가 발급되어 구독료가 컨트랙트에서 서비스 제공자에게 직접 결제됩니다. 어떤 팀원도 자금 인출 권한이 없으며, 중도 탈퇴는 그룹 투표가 필요합니다.",
+    howSafeDesc: "자금은 감사받은 온체인 스마트 컨트랙트에 보관됩니다. 볼트 전용 가상 카드가 발급되어 구독료가 컨트랙트에서 서비스 제공자에게 직접 결제됩니다. 어떤 팀원도 자금 인출 권한이 없으며, 중도 탈퇴는 그룹 투표가 필요합니다.",
     deployBtn: "볼트 배포",
-    deploying: "Base에 배포 중...",
+    deploying: "온체인 배포 중...",
     
     inviteTitle: "팀원 초대",
     inviteDesc: "이 링크를 공유하세요. Google, Discord, 지갑 등 어떤 방법으로든 참여할 수 있어요.",
@@ -249,12 +251,40 @@ const T = {
   },
 };
 
+// plans[].price = per seat / month (USD, monthly billing)
 const SVCS = [
-  { name: "Claude Team", price: 30, icon: "◈", color: "#D97706" },
-  { name: "ChatGPT Team", price: 30, icon: "◉", color: "#10A37F" },
-  { name: "Cursor Business", price: 40, icon: "⟐", color: "#3B82F6" },
-  { name: "Midjourney", price: 60, icon: "◆", color: "#E11D48" },
-  { name: "Custom", price: 0, icon: "✦", color: "#8B5CF6" },
+  { name: "Claude",         vendor: "Anthropic",    icon: "C",  color: "#D97706",
+    plans: [{ label: "Pro", price: 20 }, { label: "Max 5x", price: 100 }, { label: "Max 20x", price: 200 }, { label: "Team", price: 30, note: "min 5 seats" }] },
+  { name: "ChatGPT",        vendor: "OpenAI",       icon: "G",  color: "#10A37F",
+    plans: [{ label: "Plus", price: 20 }, { label: "Pro", price: 200 }, { label: "Team", price: 30 }] },
+  { name: "Cursor",         vendor: "Anysphere",    icon: "Cu", color: "#3B82F6",
+    plans: [{ label: "Pro", price: 20 }, { label: "Business", price: 40 }, { label: "Pro+", price: 60 }, { label: "Ultra", price: 200 }] },
+  { name: "GitHub Copilot", vendor: "GitHub",       icon: "GH", color: "#E2E8F0",
+    plans: [{ label: "Individual", price: 10 }, { label: "Business", price: 19 }, { label: "Enterprise", price: 39 }] },
+  { name: "Windsurf",       vendor: "Codeium",      icon: "W",  color: "#06B6D4",
+    plans: [{ label: "Pro", price: 15 }, { label: "Teams", price: 30 }] },
+  { name: "Perplexity",     vendor: "Perplexity AI",icon: "P",  color: "#A78BFA",
+    plans: [{ label: "Pro", price: 20 }, { label: "Max", price: 200 }, { label: "Enterprise", price: 40 }] },
+  { name: "Gemini",         vendor: "Google",       icon: "Ge", color: "#4285F4",
+    plans: [{ label: "Advanced", price: 20 }] },
+  { name: "Grok",           vendor: "xAI",          icon: "Gr", color: "#E2E8F0",
+    plans: [{ label: "Premium", price: 16 }, { label: "Premium+", price: 30 }] },
+  { name: "Midjourney",     vendor: "Midjourney",   icon: "MJ", color: "#E11D48",
+    plans: [{ label: "Basic", price: 10 }, { label: "Standard", price: 30 }, { label: "Pro", price: 60 }, { label: "Mega", price: 120 }] },
+  { name: "Runway",         vendor: "Runway",       icon: "R",  color: "#7C3AED",
+    plans: [{ label: "Standard", price: 15 }, { label: "Pro", price: 35 }, { label: "Unlimited", price: 95 }] },
+  { name: "ElevenLabs",     vendor: "ElevenLabs",   icon: "EL", color: "#F59E0B",
+    plans: [{ label: "Starter", price: 5 }, { label: "Creator", price: 22 }, { label: "Pro", price: 99 }, { label: "Scale", price: 330 }] },
+  { name: "Notion",         vendor: "Notion",       icon: "N",  color: "#F5F5F0",
+    plans: [{ label: "Plus", price: 10 }, { label: "Business", price: 20 }] },
+  { name: "Figma",          vendor: "Figma",        icon: "Fi", color: "#F24E1E",
+    plans: [{ label: "Professional", price: 15 }, { label: "Organization", price: 45 }, { label: "Enterprise", price: 75 }] },
+  { name: "Linear",         vendor: "Linear",       icon: "Li", color: "#5E6AD2",
+    plans: [{ label: "Member", price: 8 }, { label: "Plus", price: 16 }] },
+  { name: "Vercel",         vendor: "Vercel",       icon: "V",  color: "#E2E8F0",
+    plans: [{ label: "Pro", price: 20 }] },
+  { name: "Custom",         vendor: "",             icon: "+",  color: "#8B5CF6",
+    plans: [] },
 ];
 
 const SCR = { HOME: 0, ONBOARD: 1, CREATE: 2, INVITE: 3, DEPOSIT: 4, ACTIVE: 5, JOIN: 6 };
@@ -274,11 +304,16 @@ const C = {
 export default function App() {
   const [lang, setLang] = useState("ko");
   const [scr, setScr] = useState(SCR.HOME);
-  const [authed, setAuthed] = useState(false);
-  const [authMethod, setAuthMethod] = useState("");
   const [fade, setFade] = useState(true);
 
+  const { open } = useAppKit();
+  const { address, status, embeddedWalletInfo } = useAppKitAccount();
+  const { disconnect } = useDisconnect();
+  const authMethod = embeddedWalletInfo?.authProvider || (status === 'connected' ? 'wallet' : '');
+  const authed = status === 'connected';
+
   const [selSvc, setSelSvc] = useState(null);
+  const [selPlan, setSelPlan] = useState(null);
   const [cName, setCName] = useState("");
   const [cPrice, setCPrice] = useState("");
   const [nMem, setNMem] = useState(4);
@@ -296,16 +331,31 @@ export default function App() {
   const [pays, setPays] = useState([]);
   const [releasing, setReleasing] = useState(false);
 
+  const [joinCode, setJoinCode] = useState("");
+  const [customMem, setCustomMem] = useState("");
+  const [customDur, setCustomDur] = useState("");
+
+  // URL hash routing: /#/v/<vaultAddr>
+  useEffect(() => {
+    const m = window.location.hash.match(/^#\/v\/(.+)/);
+    if (m) {
+      setJoinCode(decodeURIComponent(m[1]));
+      setScr(SCR.JOIN);
+    }
+  }, []);
+
   const t = T[lang];
   const go = (s) => { setFade(false); setTimeout(() => { setScr(s); setFade(true); }, 100); };
 
   const doDeploy = () => {
     setDeploying(true);
     const sv = SVCS[selSvc];
-    const nm = selSvc === 4 ? cName : sv.name;
-    const pr = selSvc === 4 ? parseFloat(cPrice) : sv.price;
-    const pp = pr / nMem;
-    setVault({ name: nm, price: pr, pp, dep: pp * dur, nMem, dur, color: sv.color, icon: sv.icon, addr: "0x5aB2c7D4...3eF1" });
+    const isCustomSvc = sv.plans.length === 0;
+    const planLabel = isCustomSvc ? '' : sv.plans[selPlan].label;
+    const nm = isCustomSvc ? cName : `${sv.name} ${planLabel}`;
+    const pp = isCustomSvc ? parseFloat(cPrice) : sv.plans[selPlan].price;
+    const totalMonthly = pp * nMem;
+    setVault({ name: nm, price: totalMonthly, pp, dep: pp * dur, nMem, dur, color: sv.color, icon: sv.icon, addr: "0x5aB2c7D4...3eF1" });
     setMembers([
       { addr: "0x7a3B...9f2E", name: t.you, dep: false, joined: true, creator: true },
       ...Array.from({ length: nMem - 1 }, (_, i) => ({
@@ -346,7 +396,12 @@ export default function App() {
   const Steps = ({cur, n}) => <div style={{ display:"flex", gap:5, marginBottom:28 }}>{Array.from({length:n},(_,i)=><div key={i} style={{ flex: i===cur?2.5:1, height:3, borderRadius:2, background: i<=cur?C.p:C.bd, transition:"all 0.4s" }}/>)}</div>;
 
   const LangToggle = () => (
-    <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:12 }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+      {authed ? (
+        <button onClick={() => disconnect()} style={{ background:"none", border:`1px solid ${C.bd}`, borderRadius:8, color:C.t3, fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font, padding:"5px 11px" }}>
+          {lang==='ko' ? '로그아웃' : 'Sign out'}
+        </button>
+      ) : <div />}
       <div style={{ display:"flex", background:C.s1, borderRadius:9, border:`1px solid ${C.bd}`, overflow:"hidden" }}>
         {["ko","en"].map(l => <button key={l} onClick={()=>setLang(l)} style={{ padding:"5px 13px", border:"none", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:font, background: lang===l?C.pG:"transparent", color: lang===l?C.p:C.t4 }}>{l==="ko"?"한국어":"EN"}</button>)}
       </div>
@@ -410,39 +465,31 @@ export default function App() {
       {!authed ? (
         <div>
           <div style={{ textAlign:"center", margin:"48px 0 36px" }}>
-            <div style={{ fontSize:48, marginBottom:14, filter:"drop-shadow(0 0 24px rgba(129,140,248,0.25))" }}>⬡</div>
+            <div style={{ fontSize:22, fontWeight:900, marginBottom:14, width:64, height:64, borderRadius:18, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", letterSpacing:"-1px", margin:"0 auto 14px", boxShadow:"0 4px 24px rgba(99,102,241,0.35)" }}>SS</div>
             <h1 style={{ fontSize:28, fontWeight:800, fontFamily:font, marginBottom:8, letterSpacing:"-0.5px" }}>{t.appName}</h1>
             <p style={{ fontSize:15, fontWeight:500, color:C.tx, marginBottom:6 }}>{t.tagline}</p>
             <p style={{ fontSize:13, color:C.t2, lineHeight:1.6, maxWidth:320, margin:"0 auto" }}>{t.taglineSub}</p>
           </div>
-          <Title>{t.loginTitle}</Title>
-          <Desc>{t.loginDesc}</Desc>
-          {[
-            { label: t.socialGoogle, icon: "G", color: "#EA4335", method: "google" },
-            { label: t.socialDiscord, icon: "D", color: "#5865F2", method: "discord" },
-            { label: t.socialGithub, icon: "⌥", color: "#F0F0F0", method: "github" },
-          ].map((s,i) => (
-            <button key={i} onClick={() => { setAuthed(true); setAuthMethod(s.method); }} style={{
-              width:"100%", display:"flex", alignItems:"center", gap:12, padding:"14px 16px",
-              background:C.s1, border:`1px solid ${C.bd}`, borderRadius:14, cursor:"pointer",
-              marginBottom:8, textAlign:"left",
-            }}>
-              <div style={{ width:34, height:34, borderRadius:9, background:`${s.color}15`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800, color:s.color }}>{s.icon}</div>
-              <span style={{ fontSize:14, fontWeight:600, color:C.tx }}>{s.label}</span>
-            </button>
-          ))}
-          <div style={{ display:"flex", alignItems:"center", gap:12, margin:"16px 0" }}>
-            <div style={{ flex:1, height:1, background:C.bd }} />
-            <span style={{ fontSize:11, color:C.t4 }}>{t.orDivider}</span>
-            <div style={{ flex:1, height:1, background:C.bd }} />
+          <Btn on={() => open()} style={{ marginBottom:12, padding:"17px" }}>{t.loginTitle}</Btn>
+          <div style={{ display:"flex", justifyContent:"center", gap:16, marginBottom:20 }}>
+            {[
+              { icon: "G", color: "#EA4335", label: "Google" },
+              { icon: "D", color: "#5865F2", label: "Discord" },
+              { icon: "⌥", color: "#E2E8F0", label: "GitHub" },
+              { icon: "✉", color: "#A1A1AA", label: "Email" },
+            ].map((s,i) => (
+              <div key={i} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
+                <div style={{ width:36, height:36, borderRadius:10, background:`${s.color}15`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:800, color:s.color }}>{s.icon}</div>
+                <span style={{ fontSize:10, color:C.t4 }}>{s.label}</span>
+              </div>
+            ))}
           </div>
-          <Btn secondary on={() => { setAuthed(true); setAuthMethod("wallet"); }}>{t.connectWallet}</Btn>
-          <div style={{ textAlign:"center", marginTop:16, fontSize:11, color:C.t4 }}>{t.poweredBy}</div>
+          <div style={{ textAlign:"center", fontSize:11, color:C.t4 }}>{t.poweredBy}</div>
         </div>
       ) : (
         <div>
           <div style={{ textAlign:"center", margin:"36px 0 28px" }}>
-            <div style={{ fontSize:44, marginBottom:12, filter:"drop-shadow(0 0 20px rgba(129,140,248,0.2))" }}>⬡</div>
+            <div style={{ fontSize:20, fontWeight:900, marginBottom:12, width:56, height:56, borderRadius:16, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", letterSpacing:"-1px", margin:"0 auto 12px", boxShadow:"0 4px 20px rgba(99,102,241,0.3)" }}>SS</div>
             <h1 style={{ fontSize:26, fontWeight:800, fontFamily:font, marginBottom:6 }}>{t.appName}</h1>
             <p style={{ fontSize:13, color:C.t2 }}>{t.tagline}</p>
           </div>
@@ -450,10 +497,15 @@ export default function App() {
             <div>
               <div style={{ fontSize:10, color:C.t4, textTransform:"uppercase", letterSpacing:"1px", marginBottom:3 }}>{t.connected} · {t.smartAccount}</div>
               <div style={{ fontSize:14, fontWeight:600, fontFamily:mono }}>
-                {authMethod === "wallet" ? "0x7a3B...9f2E" : authMethod === "google" ? "user@gmail.com" : authMethod === "discord" ? "dev#1234" : "user@github"}
+                {embeddedWalletInfo?.user?.email || (address ? `${address.slice(0,6)}...${address.slice(-4)}` : '')}
               </div>
             </div>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:C.ok, boxShadow:`0 0 10px ${C.ok}` }} />
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ width:9, height:9, borderRadius:"50%", background:C.ok, boxShadow:`0 0 10px ${C.ok}` }} />
+              <button onClick={() => disconnect()} style={{ background:"none", border:"none", color:C.t4, fontSize:11, cursor:"pointer", fontFamily:font }}>
+                {lang === 'ko' ? '로그아웃' : 'Sign out'}
+              </button>
+            </div>
           </Card>
           <Btn on={() => { setCStep(0); setSelSvc(null); go(SCR.ONBOARD); }} style={{ marginBottom:10 }}>{t.createVault}</Btn>
           <Btn secondary on={() => go(SCR.JOIN)}>{t.joinVault}</Btn>
@@ -491,50 +543,102 @@ export default function App() {
 
   // CREATE
   if (scr === SCR.CREATE) {
-    const sv = selSvc!==null?SVCS[selSvc]:null;
-    const pr = selSvc===4?(parseFloat(cPrice)||0):(sv?.price||0);
-    const pp = nMem>0?pr/nMem:0;
-    const td = pp*dur;
+    const sv = selSvc !== null ? SVCS[selSvc] : null;
+    const isCustomSvc = sv?.plans.length === 0;
+    const pp = isCustomSvc ? (parseFloat(cPrice)||0) : (selPlan !== null ? sv.plans[selPlan].price : 0);
+    const pr = pp * nMem;
+    const td = pp * dur;
     return (
       <Wrap><Back to={cStep>0?SCR.CREATE:SCR.ONBOARD} />
         {cStep>0 && <button onClick={()=>setCStep(cStep-1)} style={{ background:"none", border:"none", color:C.t3, fontSize:13, cursor:"pointer", fontFamily:font, marginBottom:8, marginTop:-16 }}>{t.back}</button>}
         <Steps cur={cStep} n={3} />
         {cStep===0 && (<div>
           <Title>{t.selectService}</Title><Desc>{t.selectServiceDesc}</Desc>
-          {SVCS.map((s,i) => (
-            <button key={i} onClick={() => { setSelSvc(i); if(i!==4) setCStep(1); }} style={{
-              width:"100%", display:"flex", alignItems:"center", gap:13, padding:15,
-              background: selSvc===i?`${s.color}06`:C.s1, border:`1px solid ${selSvc===i?s.color+"40":C.bd}`,
-              borderRadius:14, cursor:"pointer", marginBottom:9, textAlign:"left",
-            }}>
-              <div style={{ fontSize:20, width:40, height:40, borderRadius:10, background:`${s.color}10`, display:"flex", alignItems:"center", justifyContent:"center", color:s.color }}>{s.icon}</div>
-              <div><div style={{ fontSize:14, fontWeight:600, color:C.tx }}>{s.name}</div><div style={{ fontSize:11, color:C.t4 }}>{s.price>0?`${fmt(s.price)}${t.perTeam}`:t.customAmount}</div></div>
-            </button>
-          ))}
-          {selSvc===4 && <Card style={{marginTop:4}}>
-            <Label>{t.serviceName}</Label><Input value={cName} onChange={e=>setCName(e.target.value)} placeholder="e.g. Figma" style={{marginBottom:12}} />
-            <Label>{t.monthlyPrice}</Label><Input value={cPrice} onChange={e=>setCPrice(e.target.value.replace(/[^0-9.]/g,""))} placeholder="0.00" inputMode="decimal" />
-            {cName&&cPrice && <Btn on={()=>setCStep(1)} style={{marginTop:14}}>{t.next}</Btn>}
-          </Card>}
+          {SVCS.map((s,i) => {
+            const isSelected = selSvc === i;
+            const isCustom = s.plans.length === 0;
+            const priceRange = s.plans.length > 1
+              ? `${fmt(s.plans[0].price)} – ${fmt(s.plans[s.plans.length-1].price)}/seat/mo`
+              : s.plans.length === 1 ? `${fmt(s.plans[0].price)}/seat/mo` : t.customAmount;
+            return (
+              <div key={i}>
+                <button onClick={() => {
+                  setSelSvc(i); setSelPlan(null);
+                  if (s.plans.length === 1) { setSelPlan(0); setCStep(1); }
+                }} style={{
+                  width:"100%", display:"flex", alignItems:"center", gap:13, padding:15,
+                  background: isSelected ? `${s.color}08` : C.s1,
+                  border: `1px solid ${isSelected ? s.color+"50" : C.bd}`,
+                  borderRadius: isSelected && (s.plans.length > 1 || isCustom) ? "14px 14px 0 0" : 14,
+                  cursor:"pointer", marginBottom: isSelected && (s.plans.length > 1 || isCustom) ? 0 : 9, textAlign:"left",
+                }}>
+                  <div style={{ fontSize:20, width:40, height:40, borderRadius:10, background:`${s.color}10`, display:"flex", alignItems:"center", justifyContent:"center", color:s.color }}>{s.icon}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:14, fontWeight:600, color:C.tx }}>{s.name}</div>
+                    <div style={{ fontSize:11, color:C.t4 }}>{s.vendor && `${s.vendor} · `}{priceRange}</div>
+                  </div>
+                  {s.plans.length > 1 && <div style={{ fontSize:11, color:C.t3 }}>{isSelected ? "▲" : "▼"}</div>}
+                </button>
+                {isSelected && s.plans.length > 1 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:1, marginBottom:9, border:`1px solid ${s.color}50`, borderTop:"none", borderRadius:"0 0 14px 14px", overflow:"hidden" }}>
+                    {s.plans.map((p, j) => (
+                      <button key={j} onClick={() => { setSelPlan(j); setCStep(1); }} style={{
+                        flex:"1 0 calc(50% - 0.5px)", padding:"11px 14px", background: selPlan===j ? `${s.color}12` : C.s2,
+                        border:"none", borderTop:`1px solid ${s.color}20`, cursor:"pointer", textAlign:"left",
+                      }}>
+                        <div style={{ fontSize:13, fontWeight:600, color:C.tx }}>{p.label}</div>
+                        <div style={{ fontSize:12, color:s.color, fontWeight:700 }}>{fmt(p.price)}/seat</div>
+                        {p.note && <div style={{ fontSize:10, color:C.t4, marginTop:2 }}>{p.note}</div>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {isSelected && isCustom && (
+                  <div style={{ border:`1px solid ${s.color}50`, borderTop:"none", borderRadius:"0 0 14px 14px", padding:14, background:C.s2, marginBottom:9 }}>
+                    <Label>{t.serviceName}</Label><Input value={cName} onChange={e=>setCName(e.target.value)} placeholder="e.g. Linear" style={{marginBottom:10}} />
+                    <Label>{t.monthlyPrice} (per seat)</Label><Input value={cPrice} onChange={e=>setCPrice(e.target.value.replace(/[^0-9.]/g,""))} placeholder="0.00" inputMode="decimal" />
+                    {cName&&cPrice && <Btn on={()=>setCStep(1)} style={{marginTop:12}}>{t.next}</Btn>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>)}
         {cStep===1 && (<div>
           <Title>{t.configVault}</Title><Desc>{t.configDesc}</Desc>
           <Label>{t.teamSize}</Label>
-          <div style={{ display:"flex", gap:7, marginBottom:22 }}>
-            {[2,3,4,5,6].map(n => <button key={n} onClick={()=>setNMem(n)} style={{ flex:1, padding:"14px 0", borderRadius:11, fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:font, border:`1px solid ${nMem===n?C.p:C.bd}`, background:nMem===n?C.pG:"transparent", color:nMem===n?C.p:C.t3 }}>{n}</button>)}
+          <div style={{ display:"flex", gap:7, marginBottom:10 }}>
+            {[2,3,4,5,6].map(n => <button key={n} onClick={()=>{setNMem(n);setCustomMem("");}} style={{ flex:1, padding:"14px 0", borderRadius:11, fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:font, border:`1px solid ${nMem===n&&!customMem?C.p:C.bd}`, background:nMem===n&&!customMem?C.pG:"transparent", color:nMem===n&&!customMem?C.p:C.t3 }}>{n}</button>)}
           </div>
+          <input
+            value={customMem}
+            onChange={e => { const v = e.target.value.replace(/[^0-9]/g,""); setCustomMem(v); if(v && parseInt(v)>=2) setNMem(parseInt(v)); }}
+            placeholder={lang==='ko'?"직접 입력 (2 이상)":"Custom (min 2)"}
+            inputMode="numeric"
+            style={{ width:"100%", padding:"11px 14px", background:C.s2, border:`1px solid ${customMem?C.p:C.bd}`, borderRadius:11, color:C.tx, fontSize:14, fontFamily:font, outline:"none", boxSizing:"border-box", marginBottom:22 }}
+          />
           <Label>{t.commitment}</Label>
-          <div style={{ display:"flex", gap:7, marginBottom:26 }}>
-            {[1,3,6,12].map(n => <button key={n} onClick={()=>setDur(n)} style={{ flex:1, padding:"14px 0", borderRadius:11, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:font, border:`1px solid ${dur===n?C.ac:C.bd}`, background:dur===n?C.acG:"transparent", color:dur===n?C.ac:C.t3 }}>{n}{t.mo}</button>)}
+          <div style={{ display:"flex", gap:7, marginBottom:10 }}>
+            {[1,3,6,12].map(n => <button key={n} onClick={()=>{setDur(n);setCustomDur("");}} style={{ flex:1, padding:"14px 0", borderRadius:11, fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:font, border:`1px solid ${dur===n&&!customDur?C.ac:C.bd}`, background:dur===n&&!customDur?C.acG:"transparent", color:dur===n&&!customDur?C.ac:C.t3 }}>{n}{t.mo}</button>)}
           </div>
+          <input
+            value={customDur}
+            onChange={e => { const v = e.target.value.replace(/[^0-9]/g,""); setCustomDur(v); if(v && parseInt(v)>=1) setDur(parseInt(v)); }}
+            placeholder={lang==='ko'?"직접 입력 (개월)":"Custom (months)"}
+            inputMode="numeric"
+            style={{ width:"100%", padding:"11px 14px", background:C.s2, border:`1px solid ${customDur?C.ac:C.bd}`, borderRadius:11, color:C.tx, fontSize:14, fontFamily:font, outline:"none", boxSizing:"border-box", marginBottom:26 }}
+          />
           <Btn on={()=>setCStep(2)}>{t.next}</Btn>
         </div>)}
         {cStep===2 && (<div>
           <Title>{t.reviewTitle}</Title><Desc>{t.reviewDesc}</Desc>
           <Card style={{ background:`linear-gradient(135deg, ${C.s1}, ${(sv?.color||C.p)}05)` }}>
             <div style={{ display:"flex", alignItems:"center", gap:11, marginBottom:16 }}>
-              <div style={{ fontSize:24, width:48, height:48, borderRadius:13, background:`${sv?.color||C.p}10`, display:"flex", alignItems:"center", justifyContent:"center", color:sv?.color||C.p }}>{selSvc===4?"✦":sv?.icon}</div>
-              <div><div style={{ fontSize:16, fontWeight:700 }}>{selSvc===4?cName:sv?.name}</div><div style={{ fontSize:12, color:C.t4 }}>Subscription Vault</div></div>
+              <div style={{ fontSize:24, width:48, height:48, borderRadius:13, background:`${sv?.color||C.p}10`, display:"flex", alignItems:"center", justifyContent:"center", color:sv?.color||C.p }}>{sv?.icon}</div>
+              <div>
+                <div style={{ fontSize:16, fontWeight:700 }}>{isCustomSvc ? cName : `${sv?.name} ${sv?.plans[selPlan]?.label || ''}`}</div>
+                <div style={{ fontSize:12, color:C.t4 }}>{sv?.vendor || 'Custom'} · Subscription Vault</div>
+              </div>
             </div>
             {[[t.monthlyCost,fmt(pr)],[t.members,`${nMem} ${t.people}`],[t.perPerson,fmt(pp)],[t.durationLabel,`${dur}${t.mo}`],[t.depositRequired,fmt(td)]].map(([l,v],i) => (
               <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderTop:i>0?`1px solid ${C.bd}`:"none" }}>
@@ -556,16 +660,23 @@ export default function App() {
   if (scr === SCR.INVITE) {
     const jc = members.filter(m=>m.joined).length;
     const all = jc===members.length;
-    const link = `https://sub-share.xyz/v/${vault.addr}`;
+    const link = `${window.location.origin}${window.location.pathname}#/v/${encodeURIComponent(vault.addr)}`;
+    const shareText = lang==='ko' ? `Sub-Share 볼트에 참여하세요: ${vault.name}` : `Join my Sub-Share vault: ${vault.name}`;
+    const copyLink = () => navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); });
+    const shareActions = [
+      { label: t.shareDiscord,  on: () => { navigator.clipboard.writeText(`${shareText}\n${link}`); alert('Discord에 붙여넣을 수 있도록 복사됐어요'); } },
+      { label: t.shareTelegram, on: () => window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`, '_blank') },
+      { label: t.shareSlack,    on: () => { navigator.clipboard.writeText(`${shareText}\n${link}`); alert('Slack에 붙여넣을 수 있도록 복사됐어요'); } },
+    ];
     return (
       <Wrap><Back to={SCR.HOME} /><VaultHead />
         <Title>{t.inviteTitle}</Title><Desc>{t.inviteDesc}</Desc>
         <Card style={{ background:C.s2 }}>
           <Label>{t.vaultLink}</Label>
           <div style={{ padding:"11px 13px", background:C.bg, borderRadius:10, fontSize:12, color:C.ac, fontFamily:mono, wordBreak:"break-all", marginBottom:12, border:`1px solid ${C.bd}` }}>{link}</div>
-          <Btn on={() => { setCopied(true); setTimeout(()=>setCopied(false), 2000); }} style={{ marginBottom:8 }}>{copied?t.copied:t.copyLink}</Btn>
+          <Btn on={copyLink} style={{ marginBottom:8 }}>{copied?t.copied:t.copyLink}</Btn>
           <div style={{ display:"flex", gap:7 }}>
-            {[t.shareDiscord, t.shareTelegram, t.shareSlack].map((s,i) => <Btn key={i} secondary style={{ flex:1, padding:12, fontSize:12 }}>{s}</Btn>)}
+            {shareActions.map((s,i) => <Btn key={i} secondary on={s.on} style={{ flex:1, padding:12, fontSize:12 }}>{s.label}</Btn>)}
           </div>
         </Card>
         <Label>{all ? t.allJoined : t.joined.replace("{n}",jc).replace("{t}",members.length)}</Label>
@@ -640,7 +751,7 @@ export default function App() {
             <div style={{ color:C.ok, fontSize:16, fontWeight:700, marginBottom:4 }}>{t.complete}</div>
             <div style={{ color:C.t2, fontSize:12, lineHeight:1.5 }}>{t.completeDesc}</div>
           </Card>
-          <Btn secondary on={()=>{setAuthed(true);go(SCR.HOME)}} style={{marginTop:10}}>{t.newVault}</Btn>
+          <Btn secondary on={()=>go(SCR.HOME)} style={{marginTop:10}}>{t.newVault}</Btn>
         </>)}
       </Wrap>
     );
@@ -648,13 +759,12 @@ export default function App() {
 
   // JOIN
   if (scr === SCR.JOIN) {
-    const [code, setCode] = useState("");
     return (
       <Wrap><Back to={SCR.HOME} />
         <Title>{t.joinTitle}</Title><Desc>{t.joinDesc}</Desc>
         <Label>{t.vaultAddr}</Label>
-        <Input value={code} onChange={e=>setCode(e.target.value)} placeholder="https://sub-share.xyz/v/..." style={{marginBottom:16}} />
-        <Btn disabled={code.length<4} on={() => {
+        <Input value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder={`${window.location.origin}/#/v/...`} style={{marginBottom:16}} />
+        <Btn disabled={joinCode.length<4} on={() => {
           setVault({ name:"Claude Team", price:30, pp:7.5, dep:22.5, nMem:4, dur:3, color:"#D97706", icon:"◈", addr:"0x5aB2c7D4...3eF1" });
           setMembers([
             { addr:"0x4c1D...8aF3", name:"Creator", dep:true, joined:true, creator:true },
