@@ -139,6 +139,16 @@ contract SubShareVaultTest is Test {
         assertTrue(vault.monthClaimed(1));
     }
 
+    function testClaimWithProofAcceptsStripeMinorUnitAmount() public {
+        vm.prank(CREATOR);
+        vault.claimWithProof(
+            _proof(PROVIDER_ID, _context("Claude Pro", "2000"), keccak256("proof-2b")),
+            1
+        );
+
+        assertTrue(vault.monthClaimed(1));
+    }
+
     function testClaimWithProofRejectsWrongProvider() public {
         vm.prank(CREATOR);
         vm.expectRevert("Invalid provider");

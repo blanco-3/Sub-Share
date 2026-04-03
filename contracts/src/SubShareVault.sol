@@ -376,12 +376,14 @@ contract SubShareVault {
     function _containsExpectedAmount(string memory haystack) internal view returns (bool) {
         uint256 wholeUnits = monthlyPrice / 1e6;
         uint256 cents = (monthlyPrice % 1e6) / 1e4;
+        uint256 stripeMinorUnits = monthlyPrice / 1e4;
 
         if (cents == 0) {
             string memory wholeString = _uintToString(wholeUnits);
             return
                 _containsNumberToken(haystack, wholeString) ||
-                _containsNumberToken(haystack, string.concat(wholeString, ".00"));
+                _containsNumberToken(haystack, string.concat(wholeString, ".00")) ||
+                _containsNumberToken(haystack, _uintToString(stripeMinorUnits));
         }
 
         string memory twoDecimalString = string.concat(
@@ -402,6 +404,10 @@ contract SubShareVault {
             if (_containsNumberToken(haystack, oneDecimalString)) {
                 return true;
             }
+        }
+
+        if (_containsNumberToken(haystack, _uintToString(stripeMinorUnits))) {
+            return true;
         }
 
         return false;
